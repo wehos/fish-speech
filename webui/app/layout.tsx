@@ -4,8 +4,8 @@ import '@/styles/globals.css';
 import { cn } from "@/lib/utils";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { useTranslation } from 'next-i18next';
-
-
+import { Providers } from '@/app/providers'
+import { FishNavigation } from '@/components/fish-audio/navigation'
 
 export const fontSans = FontSans({
   subsets: ["latin"],
@@ -31,7 +31,10 @@ export default function RootLayout({
           fontSans.variable
         )}
       >
-        {children}
+        <Providers>
+          <FishNavigation />
+          {children}
+        </Providers>
       </body>
     </html>
   )
