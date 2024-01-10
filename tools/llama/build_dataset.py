@@ -1,4 +1,3 @@
-import os
 import re
 from collections import defaultdict
 from multiprocessing import Pool
@@ -44,30 +43,30 @@ def task_generator_yaml(config):
 
         logger.info(f"Found {len(grouped_files)} groups in {root}")
         for name, subset in grouped_files.items():
-            yield name, subset, source, languages, extension, None
+            yield name, subset, source, languages, extension
 
 
 def task_generator_filelist(filelist):
     grouped_files = defaultdict(list)
     for filename, speaker, languages, text in load_filelist(filelist):
-        if speaker in grouped_files:
-            assert (
-                languages == grouped_files[speaker][0][2]
-            ), f"Speaker {speaker} has different languages"
-
         grouped_files[speaker].append((Path(filename), text, languages))
 
     logger.info(f"Found {len(grouped_files)} groups in {filelist}")
-    for speaker, (filename, txt, languages) in grouped_files.items():
-        yield speaker, filename, "filelist", languages, None, txt
+    for speaker, values in grouped_files.items():
+        yield speaker, values, "filelist", languages, None
 
 
 def run_task(task):
-    name, subset, source, languages, extension, text = task
+    name, subset, source, languages, extension = task
 
     # Parse the files
     sentences = []
     for file in subset:
+        if isinstance(file, tuple):
+            file, text, languages = file
+        else:
+            text = None
+
         np_file = file.with_suffix(".npy")
         if np_file.exists() is False:
             logger.warning(f"Can't find {np_file}")
@@ -123,8 +122,8 @@ def run_task(task):
 )
 @click.option("--output", type=click.Path(), default="data/quantized-dataset-ft.protos")
 @click.option("--filelist", type=click.Path(), default=None)
-@click.option("--num_worker", type=int, default=16)
-def main(config, output, filelist, num_worker):
+@click.option("--num-workers", type=int, default=16)
+def main(config, output, filelist, num_workers):
     dataset_fp = open(output, "wb")
     generator_fn = (
         task_generator_yaml(config)
@@ -132,7 +131,7 @@ def main(config, output, filelist, num_worker):
         else task_generator_filelist(filelist)
     )
 
-    with Pool(num_worker) as p:
+    with Pool(num_workers) as p:
         for result in tqdm(p.imap_unordered(run_task, generator_fn)):
             dataset_fp.write(result)
 

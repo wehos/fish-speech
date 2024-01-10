@@ -37,7 +37,7 @@ python tools/vqgan/create_train_split.py data/demo
 该命令会在 `data/demo` 目录下创建 `data/demo/vq_train_filelist.txt` 和 `data/demo/vq_val_filelist.txt` 文件, 分别用于训练和验证.  
 
 !!!info
-    对于 VITS 格式, 你可以使用 `--filelist xxx.list` 来指定文件列表.
+    对于 VITS 格式, 你可以使用 `--filelist xxx.list` 来指定文件列表.  
     请注意, `filelist` 所指向的音频文件必须也位于 `data/demo` 文件夹下.
 
 ### 3. 启动训练
@@ -112,7 +112,7 @@ python tools/vqgan/extract_vq.py data/demo \
 ```
 
 !!! note
-    你可以调整 `--num-workers` 和 `--batch-size` 来提高提取速度, 但是请注意不要超过你的显存限制. 
+    你可以调整 `--num-workers` 和 `--batch-size` 来提高提取速度, 但是请注意不要超过你的显存限制.  
     对于 VITS 格式, 你可以使用 `--filelist xxx.list` 来指定文件列表.
 
 该命令会在 `data/demo` 目录下创建 `.npy` 文件, 如下所示:
@@ -140,8 +140,8 @@ python tools/vqgan/extract_vq.py data/demo \
 ```bash
 python tools/llama/build_dataset.py \
     --config "fish_speech/configs/data/finetune.yaml" \
-    --output "data/quantized-dataset-ft.protos"
-    --num_workers 16
+    --output "data/quantized-dataset-ft.protos" \
+    --num-workers 16
 ```
 
 命令执行完毕后, 你应该能在 `data` 目录下看到 `quantized-dataset-ft.protos` 文件.
@@ -186,11 +186,14 @@ HF_ENDPOINT=https://hf-mirror.com huggingface-cli download fishaudio/speech-lm-v
 最后, 你可以运行以下命令来启动微调:
 
 ```bash
-python fish_speech/train.py --config-name text2semantic_finetune_spk
+python fish_speech/train.py --config-name text2semantic_finetune
 ```
 
 !!! note
-    你可以通过修改 `fish_speech/configs/text2semantic_finetune_spk.yaml` 来修改训练参数如 `batch_size`, `gradient_accumulation_steps` 等, 来适应你的显存.
+    如果你想使用 lora, 请使用 `--config-name text2semantic_finetune_lora` 来启动微调.
+
+!!! note
+    你可以通过修改 `fish_speech/configs/text2semantic_finetune.yaml` 来修改训练参数如 `batch_size`, `gradient_accumulation_steps` 等, 来适应你的显存.
 
 训练结束后, 你可以参考 [推理](inference.md) 部分, 并携带 `--speaker SPK1` 参数来测试你的模型.
 

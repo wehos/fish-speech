@@ -37,7 +37,7 @@ python tools/vqgan/create_train_split.py data/demo
 This command will create `data/demo/vq_train_filelist.txt` and `data/demo/vq_val_filelist.txt` in the `data/demo` directory, to be used for training and validation respectively.
 
 !!!info
-    For the VITS format, you can specify a file list using `--filelist xxx.list`.
+    For the VITS format, you can specify a file list using `--filelist xxx.list`.  
     Please note that the audio files in `filelist` must also be located in the `data/demo` folder.
 
 ### 3. Start Training
@@ -100,7 +100,8 @@ python tools/vqgan/extract_vq.py data/demo \
 ```
 
 !!! note
-    You can adjust `--num-workers` and `--batch-size` to increase extraction speed, but please make sure not to exceed your GPU memory limit.
+    You can adjust `--num-workers` and `--batch-size` to increase extraction speed, but please make sure not to exceed your GPU memory limit.  
+    For the VITS format, you can specify a file list using `--filelist xxx.list`.
 
 This command will create `.npy` files in the `data/demo` directory, as shown below:
 
@@ -134,7 +135,6 @@ After the command finishes executing, you should see the `quantized-dataset-ft.p
 
 !!!info
     For the VITS format, you can specify a file list using `--filelist xxx.list`.
-    Please note that the audio files referenced in `filelist` must also be located in the `data/demo` folder.
 
 ### 4. Start the Rust data server
 
@@ -166,11 +166,14 @@ huggingface-cli download fishaudio/speech-lm-v1 text2semantic-400m-v0.2-4k.pth -
 
 Finally, you can start the fine-tuning by running the following command:
 ```bash
-python fish_speech/train.py --config-name text2semantic_finetune_spk
+python fish_speech/train.py --config-name text2semantic_finetune
 ```
 
+!!! info
+    If you want to use lora, please use `--config-name text2semantic_finetune_lora` to start fine-tuning.
+
 !!! note
-    You can modify the training parameters such as `batch_size`, `gradient_accumulation_steps`, etc. to fit your GPU memory by modifying `fish_speech/configs/text2semantic_finetune_spk.yaml`.
+    You can modify the training parameters such as `batch_size`, `gradient_accumulation_steps`, etc. to fit your GPU memory by modifying `fish_speech/configs/text2semantic_finetune.yaml`.
 
 After training is complete, you can refer to the [inference](inference.md) section, and use `--speaker SPK1` to generate speech.
 

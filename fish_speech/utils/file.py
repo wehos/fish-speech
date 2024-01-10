@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Union
 
 from loguru import logger
+from natsort import natsorted
 
 AUDIO_EXTENSIONS = {
     ".mp3",
@@ -49,7 +50,7 @@ def list_files(
         files = [f for f in files if f.suffix in extensions]
 
     if sort:
-        files = sorted(files)
+        files = natsorted(files)
 
     return files
 
@@ -85,7 +86,12 @@ def load_filelist(path: Path | str) -> list[tuple[Path, str, str, str]]:
 
     with open(path, "r", encoding="utf-8") as f:
         for line in f.readlines():
-            filename, speaker, language, text = line.strip().split("|")
+            splits = line.strip().split("|", maxsplit=3)
+            if len(splits) != 4:
+                logger.warning(f"Invalid line: {line}")
+                continue
+
+            filename, speaker, language, text = splits
             file = Path(filename)
             language = language.strip().lower()
 
