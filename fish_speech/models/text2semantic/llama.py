@@ -7,6 +7,7 @@ import torch.nn as nn
 from einops import rearrange
 from torch import Tensor
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -28,18 +29,10 @@ class ModelArgs:
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
     dropout: float = 0.0
-
-    # Additional decoding heads
-    codebook_size: int = 160
-    num_codebooks: int = 4
-    num_in_codebooks: Optional[int] = None
-    codebook_padding_idx: int = 0
+    is_causal: bool = True
 
     # Gradient checkpointing
     use_gradient_checkpointing: bool = True
-
-    # NEFT
-    neft_alpha: float = 0
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -48,8 +41,6 @@ class ModelArgs:
             hidden_dim = 4 * self.dim
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_multiple(n_hidden, 256)
-        if self.num_in_codebooks is None:
-            self.num_in_codebooks = self.num_codebooks
         self.head_dim = self.dim // self.n_head
 
 
@@ -86,18 +77,14 @@ class Transformer(nn.Module):
         self.config = config
 
         self.embeddings = nn.Embedding(
-            config.vocab_size + config.codebook_size * config.num_in_codebooks,
+            config.vocab_size,
             config.dim,
         )
         self.layers = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.n_layer)
         )
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
-        self.output = nn.Linear(
-            config.dim,
-            config.vocab_size + config.codebook_size * config.num_codebooks,
-            bias=False,
-        )
+        self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
         self.register_buffer(
             "freqs_cis",
@@ -106,16 +93,27 @@ class Transformer(nn.Module):
                 config.dim // config.n_head,
                 config.rope_base,
             ),
+            persistent=False,
         )
-        self.register_buffer(
-            "causal_mask",
-            torch.tril(
+
+        if config.is_causal:
+            causal_mask = torch.tril(
                 torch.ones(
                     config.max_seq_len,
                     config.max_seq_len,
                     dtype=torch.bool,
                 )
-            ),
+            )
+        else:
+            # Everything is visible
+            causal_mask = torch.ones(
+                config.max_seq_len, config.max_seq_len, dtype=torch.bool
+            )
+
+        self.register_buffer(
+            "causal_mask",
+            causal_mask,
+            persistent=False,
         )
 
         # For kv cache
@@ -142,33 +140,6 @@ class Transformer(nn.Module):
                 dtype=dtype,
             )
 
-    def embed(self, x: Tensor) -> Tensor:
-        # Here we want to merge the embeddings of the codebooks
-        if self.config.num_in_codebooks == 0:
-            return self.embeddings(x[:, 0])
-
-        vocab_embeds = [self.embeddings(x[:, 0])]
-        for i in range(self.config.num_in_codebooks):
-            emb = self.embeddings(
-                x[:, i + 1] + i * self.config.codebook_size + self.config.vocab_size
-            )
-            emb[x[:, i + 1] == self.config.codebook_padding_idx] = 0
-            vocab_embeds.append(emb)
-
-        x = torch.stack(vocab_embeds, dim=3)
-        x = x.sum(dim=3)
-
-        if self.config.neft_alpha > 0 and self.training:
-            # alpha / sqrt(L * D)
-            scaled_alpha = self.config.neft_alpha / math.sqrt(
-                self.config.dim * x.shape[2]
-            )
-            x += torch.rand_like(x) * scaled_alpha
-
-            print("NEFT alpha:", scaled_alpha)
-
-        return x
-
     def compute(
         self,
         x: Tensor,
@@ -178,7 +149,7 @@ class Transformer(nn.Module):
     ) -> TransformerForwardResult:
         for layer in self.layers:
             if self.config.use_gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(
+                x = gradient_checkpoint(
                     layer, x, freqs_cis, mask, input_pos, use_reentrant=True
                 )
             else:
@@ -186,32 +157,16 @@ class Transformer(nn.Module):
 
         x = self.norm(x)
         logits = self.output(x)
-        token_logits = logits[:, :, : self.config.vocab_size]
-
-        if self.config.num_codebooks == 0:
-            return TransformerForwardResult(
-                token_logits=token_logits,
-                codebook_logits=None,
-            )
-
-        codebook_logits = logits[:, :, self.config.vocab_size :]
-        codebook_logits = rearrange(
-            codebook_logits, "b n (c d) -> b n c d", c=self.config.num_codebooks
-        )
-
-        return TransformerForwardResult(
-            token_logits=token_logits,
-            codebook_logits=codebook_logits,
-        )
+        return logits
 
     def forward(
         self, x: Tensor, key_padding_mask: Optional[Tensor] = None
     ) -> TransformerForwardResult:
-        # x: (batch, num_codebooks + 1, seq_len)
-        seq_len = x.size(2)
+        # x: (batch, seq_len)
+        seq_len = x.size(1)
 
         # Here we want to merge the embeddings of the codebooks
-        x = self.embed(x)
+        x = self.embeddings(x)
 
         mask = self.causal_mask[None, None, :seq_len, :seq_len]  # (B, N, Q, K)
         freqs_cis = self.freqs_cis[:seq_len]
@@ -225,13 +180,13 @@ class Transformer(nn.Module):
         return self.compute(x, freqs_cis, mask)
 
     def forward_generate(self, x: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
-        # x: (batch, num_codebooks + 1, 1)
+        # x: (batch, 1)
 
         assert (
             self.max_seq_len != -1 and self.max_batch_size != -1
         ), "Please call setup_caches before forward_generate"
 
-        x = self.embed(x)
+        x = self.embeddings(x)
 
         mask = self.causal_mask[
             None, None, input_pos, : self.max_seq_len
@@ -383,17 +338,15 @@ if __name__ == "__main__":
         dim=768,
         rope_base=10000,
         norm_eps=1e-5,
-        codebook_size=0,
-        num_codebooks=0,
     )
 
     model = Transformer(args)
     model = model.cuda().bfloat16()
     print("Total params:", sum(i.numel() for i in model.parameters()) / 1024 / 1024)
 
-    inputs = torch.randint(0, 100, (2, 5, 128)).cuda()
+    inputs = torch.randint(0, 100, (2, 128)).cuda()
     key_padding_mask = torch.zeros(2, 128).bool().cuda()
     key_padding_mask[0, 2:] = True
     x1 = model(inputs, key_padding_mask=key_padding_mask)
-    print(x1.token_logits.shape)
+    print(x1.shape)
     # print(x1.codebook_logits.shape)

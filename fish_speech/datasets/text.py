@@ -1,4 +1,5 @@
 import random
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import chain
 from random import Random
@@ -113,7 +114,7 @@ class StreamTextDataset(IterableDataset):
 
             # 30% modeling phones
             if random.random() < 0.3:
-                text = " ".join(
+                text = "".join(
                     [
                         (f"<p:{i}>" if i not in pu_symbols and i != pad_symbol else i)
                         for i in text
@@ -273,7 +274,7 @@ class AutoAugTextDataset(IterableDataset):
         if (
             mode == "sample" and (random.random() < self.phones_prob)
         ) or mode == "phones":
-            sentence = " ".join(
+            sentence = "".join(
                 [
                     (f"<p:{i}>" if i not in pu_symbols and i != pad_symbol else i)
                     for i in phones
@@ -387,7 +388,7 @@ class AutoAugTextDataset(IterableDataset):
             tokens, labels = self.pack_sentences(
                 final_text,
                 semantics=final_semantic,
-                speaker=None if self.use_speaker else response.name,
+                speaker=response.name if self.use_speaker else None,
                 add_bos=True,
             )
             all_tokens.append(tokens)
@@ -482,67 +483,62 @@ class AutoAugTextDataset(IterableDataset):
             sentences = [f"[SPK: {speaker}]"] + sentences
 
         final_text = "[INST] " + " ".join(sentences) + " [/INST]"
-        encoded = self.tokenizer.encode(
+        tokens = self.tokenizer.encode(
             final_text,
             add_special_tokens=False,
             truncation=False,
             max_length=10**6,
         )
-        semantic_length = sum([len(i[0].values) for i in semantics])
-        prompt_length = len(encoded)
+        prompt_length = len(tokens)
         num_codebooks = (
             len(semantics[0]) if self.num_codebooks is None else self.num_codebooks
+        )
+        codebook_token_ids = self.tokenizer.convert_tokens_to_ids(
+            [f"<c:{i}>" for i in range(num_codebooks)]
         )
 
         bos_bias = 1 if add_bos else 0
 
-        # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
-        pad_token_length = semantic_length + (
-            num_codebooks - 1 if self.use_delay_pattern else 0
-        )
-        tokens = (
-            encoded
-            + [self.tokenizer.pad_token_id] * pad_token_length
-            + [self.tokenizer.eos_token_id]
-        )
+        # Create the codebooks
+        tokens = [deepcopy(tokens) for _ in range(num_codebooks)]
 
         if add_bos:
-            tokens = [self.tokenizer.bos_token_id] + tokens
+            # tokens = [self.tokenizer.bos_token_id] + tokens
+            tokens[0] = [self.tokenizer.bos_token_id] + tokens[0]
+            for idx in range(1, num_codebooks):
+                tokens[idx] = [codebook_token_ids[idx]] + tokens[idx]
 
-        # Codebook bos/padding: 0, eos: 1
-        # Implement delay pattern
-        codes = [
-            [CODEBOOK_PAD_TOKEN_ID]
-            * (prompt_length + bos_bias + (i if self.use_delay_pattern else 0))
-            for i in range(num_codebooks)
-        ]
         for segment in semantics:
             for book_idx, book in zip(range(num_codebooks), segment):
-                for j in book.values:
-                    codes[book_idx].append(int(j) + 2)
+                values = [f"<s:{i}>" for i in book.values]
+                tokens[book_idx].extend(
+                    self.tokenizer.encode(
+                        "".join(values),
+                        add_special_tokens=False,
+                        truncation=False,
+                        max_length=10**6,
+                    )
+                )
 
-        for idx, book in enumerate(codes):
-            if self.use_delay_pattern:
-                book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
-            book.append(CODEBOOK_EOS_TOKEN_ID)
-
-        tokens = [tokens] + codes
+        for book in tokens:
+            book.append(self.tokenizer.eos_token_id)
 
         tokens = torch.tensor(tokens, dtype=torch.long)
         labels = tokens.clone()
 
-        # Mask out the <s> tokens for semantic, predict semantic tokens only
-        # Since we don't mask out the input tokens, the language modeling still works
+        # Copy the tokens of the first codebook to the rest (which acts as query)
+        for idx in range(1, num_codebooks):
+            tokens[idx, 1:] = tokens[0, 1:]
+
+        # Mask out semantic, <c:0>, <c:1>, <c:2>, <c:3> for mlm
         labels[1:, : (prompt_length + bos_bias)] = -100
 
         tokens = tokens[:, :-1]
-        labels = labels[:, 1:]
+        labels = torch.cat([labels[:1, 1:], labels[1:, :-1]], dim=0)
 
         # Verify the padding is correct, and the last token is eos
-        assert add_bos is False or tokens[0, 0] == self.tokenizer.bos_token_id
-        assert (tokens[1:, : prompt_length + bos_bias] == CODEBOOK_PAD_TOKEN_ID).all()
+        assert add_bos is False or (tokens[0, 0] == self.tokenizer.bos_token_id).all()
         assert labels[0, -1] == self.tokenizer.eos_token_id
-        assert (labels[1:, -1] == CODEBOOK_EOS_TOKEN_ID).all()
 
         return tokens, labels
 
@@ -594,7 +590,6 @@ class TextDataCollator:
                     (0, self.max_length - tokens_length),
                     value=self.tokenizer.eos_token_id,
                 )
-                _tokens[1:, tokens_length:] = CODEBOOK_EOS_TOKEN_ID
                 _labels = F.pad(
                     _labels, (0, self.max_length - _labels.size(1)), value=-100
                 )
@@ -684,13 +679,30 @@ if __name__ == "__main__":
     from tqdm import tqdm
 
     ds = AutoAugTextDataset(
-        tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),
-        use_speaker=True,
-        interactive_prob=1.0,
+        tokenizer=AutoTokenizer.from_pretrained(
+            "fishaudio/speech-lm-v1", revision="yi-34b"
+        ),
+        use_speaker=False,
+        interactive_prob=0.0,
         phones_prob=1.0,
         use_negative_samples=False,
         num_codebooks=4,
+        use_delay_pattern=True,
+        max_length=32,
     )
+
+    for i in ds:
+        print(i)
+        tokens = i["tokens"]
+        labels = i["labels"]
+        labels[labels == -100] = ds.tokenizer.pad_token_id
+
+        for i in range(4):
+            print(ds.tokenizer.decode(tokens[i].tolist()))
+            print(ds.tokenizer.decode(labels[i].tolist()))
+
+        break
+    exit()
 
     # ds = AutoAugTextDataset(
     #     tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),

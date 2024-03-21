@@ -3,14 +3,17 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from fish_speech.text.symbols import en_symbols, jp_symbols, zh_symbols
 
 # reuse the tokenizer from the llama
-model_type = "meta-llama/Llama-2-7b-hf"
+model_type = "01-ai/Yi-34B"
 tokenizer = AutoTokenizer.from_pretrained(model_type)
 
 # new tokens
 new_tokens = list(set(zh_symbols + jp_symbols + en_symbols))
-new_tokens = [f"<p:{token}>" for token in new_tokens] + [
-    f"<s:{i}>" for i in range(4096)
-]
+new_tokens = (
+    [f"<p:{token}>" for token in new_tokens]
+    + [f"<s:{i}>" for i in range(1024)]
+    + [f"<c:{i}>" for i in range(16)]
+)
+
 tokenizer.add_tokens(new_tokens)
 tokenizer.add_special_tokens({"pad_token": "<pad>"})
 
@@ -46,4 +49,4 @@ print(f"\tDecoded: {tokenizer.batch_decode(encoded)}")
 # model.push_to_hub(
 #     "fishaudio/speech-lm-300m", private=True, revision="text-pretrain-10k-phones"
 # )
-tokenizer.push_to_hub("fishaudio/speech-lm-v1", private=True)
+tokenizer.push_to_hub("fishaudio/speech-lm-v1", revision="yi-34b")

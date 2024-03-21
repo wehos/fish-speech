@@ -2,9 +2,9 @@ defaults:
   - base
   - _self_
 
-project: text2semantic_pretrain_small_4_in_8_codebooks
+project: text2semantic_pretrain_small
 max_length: 2048
-use_delay_pattern: true
+use_delay_pattern: false
 
 # Lightning Trainer
 trainer:
@@ -13,16 +13,18 @@ trainer:
   gradient_clip_algorithm: 'norm'
   max_steps: 100_000
   precision: bf16-true
-  limit_val_batches: 10
+  limit_val_batches: 20
 
 # Dataset Configuration
 tokenizer:
   _target_: transformers.AutoTokenizer.from_pretrained
   pretrained_model_name_or_path: fishaudio/speech-lm-v1
+  revision: yi-34b
 
 # Dataset Configuration
 train_dataset:
   _target_: fish_speech.datasets.text.AutoAugTextDataset
+  server: localhost:50051
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   num_codebooks: ${model.model.config.num_codebooks}
@@ -33,6 +35,7 @@ train_dataset:
 
 val_dataset:
   _target_: fish_speech.datasets.text.AutoAugTextDataset
+  server: localhost:50052
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   num_codebooks: ${model.model.config.num_codebooks}
@@ -54,23 +57,33 @@ data:
 model:
   _target_: fish_speech.models.text2semantic.TextToSemantic
 
-  model:
+  ar_model:
     # ~ 130M parameters, for debug purpose
     _target_: fish_speech.models.text2semantic.llama.Transformer
     config:
       _target_: fish_speech.models.text2semantic.llama.ModelArgs
-      max_seq_len: 4096
-      vocab_size: 36408
+      max_seq_len: ${max_length}
+      vocab_size: 65352
       n_layer: 12
       n_head: 12
       dim: 768
       rope_base: 10000
       norm_eps: 1e-5
-      num_in_codebooks: 4 # input codebook size
-      num_codebooks: 8  # output codebook size
-      codebook_size: 264 # codebook size 256 + 2 special tokens
-      dropout: 0.1
-      neft_alpha: 10
+      is_causal: true
+
+  nar_model:
+    # ~ 130M parameters, for debug purpose
+    _target_: fish_speech.models.text2semantic.llama.Transformer
+    config:
+      _target_: fish_speech.models.text2semantic.llama.ModelArgs
+      max_seq_len: ${max_length}
+      vocab_size: 65352
+      n_layer: 12
+      n_head: 12
+      dim: 768
+      rope_base: 10000
+      norm_eps: 1e-5
+      is_causal: false
 
   optimizer:
     _target_: torch.optim.AdamW
