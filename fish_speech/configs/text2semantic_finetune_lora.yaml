@@ -67,7 +67,7 @@ model:
   lora_config:
     _target_: fish_speech.models.text2semantic.lit_module.LoraConfig
     r: 8
-    lora_alpha: 16
+    lora_alpha: 32
 
   optimizer:
     _target_: torch.optim.AdamW

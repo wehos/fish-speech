@@ -78,8 +78,6 @@ def train(cfg: DictConfig) -> tuple[dict, dict]:
         utils.log_hyperparameters(object_dict)
 
     if cfg.get("train"):
-        log.info("Starting training!")
-
         ckpt_path = cfg.get("ckpt_path")
         auto_resume = False
 
@@ -100,7 +98,8 @@ def train(cfg: DictConfig) -> tuple[dict, dict]:
             err = model.load_state_dict(ckpt, strict=False)
             log.info(f"Error loading state dict: {err}")
             ckpt_path = None
-
+            
+        log.info("Starting training!")
         trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
 
     train_metrics = trainer.callback_metrics

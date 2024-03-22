@@ -3,11 +3,39 @@ defaults:
   - _self_
 
 project: text2semantic_pretrain_large_4_in_8_codebooks
+max_length: 4096
+ckpt_path: checkpoints/consolidated.00.pth
+resume_weights_only: true
 
+data:
+  _target_: fish_speech.datasets.text.TextDataModule
+  train_dataset: ${train_dataset}
+  val_dataset: ${val_dataset}
+  num_workers: 4
+  batch_size: 8
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  
 # Model Configuration
 model:
   model:
     config:
-      n_layer: 36
-      n_head: 20
-      dim: 1280
+      n_layer: 32
+      n_head: 32
+      dim: 4096
+
+  save_lora_only: false
+  lora_config:
+    _target_: fish_speech.models.text2semantic.lit_module.LoraConfig
+    r: 8
+    lora_alpha: 32
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
+    lr_lambda:
+      _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 5000
+      num_training_steps: ${trainer.max_steps}
+      final_lr_ratio: 0.1

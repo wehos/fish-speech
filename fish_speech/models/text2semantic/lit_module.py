@@ -46,10 +46,10 @@ class TextToSemantic(L.LightningModule):
 
     def setup_lora(self):
         # Replace the embedding layer with a LoRA layer
-        self.model.embeddings = lora.Embedding(
-            num_embeddings=self.model.embeddings.num_embeddings,
-            embedding_dim=self.model.embeddings.embedding_dim,
-            padding_idx=self.model.embeddings.padding_idx,
+        self.model.tok_embeddings = lora.Embedding(
+            num_embeddings=self.model.tok_embeddings.num_embeddings,
+            embedding_dim=self.model.tok_embeddings.embedding_dim,
+            padding_idx=self.model.tok_embeddings.padding_idx,
             r=self.lora_config.r,
             lora_alpha=self.lora_config.lora_alpha,
         )
@@ -81,7 +81,11 @@ class TextToSemantic(L.LightningModule):
 
         # Mark only the LoRA layers as trainable
         lora.mark_only_lora_as_trainable(self.model, bias="lora_only")
-
+        for n, p in self.model.added_embeddings.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.added_output.named_parameters():
+            p.requires_grad = True
+                
     def forward(self, x):
         return self.model(x)
 
@@ -99,7 +103,7 @@ class TextToSemantic(L.LightningModule):
         # Get weight decay parameters
         weight_decay_parameters, other_parameters = [], []
         for name, param in self.named_parameters():
-            if ".bias" in name or "norm.weight" in name or ".embeddings." in name:
+            if ".bias" in name or "norm.weight" in name or "embeddings" in name:
                 other_parameters.append(param)
             else:
                 weight_decay_parameters.append(param)

@@ -7,6 +7,7 @@ import torch.nn as nn
 from einops import rearrange
 from torch import Tensor
 from torch.nn import functional as F
+from transformers import LlamaModel, LlamaConfig
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -79,25 +80,54 @@ class TransformerForwardResult:
     token_logits: Tensor
     codebook_logits: Tensor
 
+# class Transformer(LlamaModel):
+#     def __init__(self, config: ModelArgs) -> None:
+#         config = LlamaConfig(
+#             { "bos_token_id": 1,
+#               "eos_token_id": 2,
+#               "hidden_act": "silu",
+#               "hidden_size": 4096,
+#               "initializer_range": 0.02,
+#               "intermediate_size": 11008,
+#               "max_position_embeddings": 4096,
+#               "model_type": "llama",
+#               "num_attention_heads": 32,
+#               "num_hidden_layers": 32,
+#               "num_key_value_heads": 32,
+#               "pretraining_tp": 1,
+#               "rms_norm_eps": 1e-05,
+#               "rope_scaling": null,
+#               "tie_word_embeddings": false,
+#               "vocab_size": config['vocab_size']
+#             })
+#         super().__init__(config)
+        
+#         self.padding_idx = config.pad_token_id
+#         self.vocab_size = config.vocab_size
 
+#         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+#         self.layers = nn.ModuleList(
+#             [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+#         )
+#         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+#         self.gradient_checkpointing = False
+
+#         self.post_init()
+    
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
         self.config = config
 
-        self.embeddings = nn.Embedding(
-            config.vocab_size + config.codebook_size * config.num_in_codebooks,
-            config.dim,
-        )
+        self.tok_embeddings = nn.Embedding(32000, config.dim)
+        self.added_embeddings = nn.Embedding(config.vocab_size + config.codebook_size * config.num_in_codebooks - 32000, config.dim)
+        
         self.layers = nn.ModuleList(
             TransformerBlock(config) for _ in range(config.n_layer)
         )
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
-        self.output = nn.Linear(
-            config.dim,
-            config.vocab_size + config.codebook_size * config.num_codebooks,
-            bias=False,
-        )
+        self.output = nn.Linear(config.dim, 32000, bias=False)
+        self.added_output = nn.Linear(config.dim, config.vocab_size + config.codebook_size * config.num_codebooks - 32000, bias=False)
 
         self.register_buffer(
             "freqs_cis",
@@ -121,6 +151,15 @@ class Transformer(nn.Module):
         # For kv cache
         self.max_batch_size = -1
         self.max_seq_len = -1
+
+    def embeddings(self, x):
+        embeddings = torch.cat([self.tok_embeddings.weight, self.added_embeddings.weight], dim=0)
+        return F.embedding(x, embeddings)
+
+    def combined_output(self, hidden):
+        original_output = self.output(hidden)
+        new_output = self.added_output(hidden)
+        return torch.cat([original_output, new_output], -1)
 
     def setup_caches(
         self, max_batch_size: int, max_seq_len: int, dtype: torch.dtype = torch.bfloat16
@@ -185,7 +224,7 @@ class Transformer(nn.Module):
                 x = layer(x, freqs_cis, mask, input_pos=input_pos)
 
         x = self.norm(x)
-        logits = self.output(x)
+        logits = self.combined_output(x)
         token_logits = logits[:, :, : self.config.vocab_size]
 
         if self.config.num_codebooks == 0:
@@ -241,6 +280,7 @@ class Transformer(nn.Module):
         # TODO: support key padding mask for generation
 
         return self.compute(x, freqs_cis, mask, input_pos=input_pos)
+
 
 
 class TransformerBlock(nn.Module):
