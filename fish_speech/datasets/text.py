@@ -291,8 +291,8 @@ class AutoAugTextDataset(IterableDataset):
         return sentence, len(tokens)
 
     def sample_data(self):
-        # Shuffle unique lines, estimate that each sample is at least 20 tokens
-        num_samples = self.max_length // 20
+        # Shuffle unique lines, estimate that each sample is at least 30 tokens
+        num_samples = self.max_length // 30
 
         if self.use_data_server:
             request = SampleDataRequest(num_samples=num_samples)
