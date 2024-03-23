@@ -40,7 +40,7 @@ class TextToSemantic(L.LightningModule):
         self.save_lora_only = save_lora_only
         self.use_dpo = use_dpo  # We don't support reference model yet
         self.dpo_beta = dpo_beta
-
+        
         if self.lora_config is not None:
             self.setup_lora()
 
@@ -85,7 +85,34 @@ class TextToSemantic(L.LightningModule):
             p.requires_grad = True
         for n, p in self.model.added_output.named_parameters():
             p.requires_grad = True
+        self.alpha_scheduler = 0
                 
+    def set_lora_alpha(self, alpha):
+        if isinstance(self.model.tok_embeddings, lora.Embedding):
+            self.model.tok_embeddings.lora_alpha += alpha
+        
+        if not getattr(self, 'lora_linears', None):
+            linears = [(self.model, "output")]
+            for layer in self.model.layers:
+                linears.extend([(layer.attention, "wqkv"), (layer.attention, "wo")])
+                linears.extend(
+                    [
+                        (layer.feed_forward, "w1"),
+                        (layer.feed_forward, "w2"),
+                        (layer.feed_forward, "w3"),
+                    ]
+                )
+            lora_linears = []
+            for module, layer in linears:
+                linear_layer = getattr(module, layer)
+                if isinstance(linear_layer, lora.Linear):
+                    lora_linears.append(linear_layer)
+            self.lora_linears = lora_linears
+
+        for linear_layer in self.lora_linears:
+            linear_layer.lora_alpha = alpha
+            linear_layer.scaling = linear_layer.lora_alpha / linear_layer.r
+    
     def forward(self, x):
         return self.model(x)
 
@@ -340,6 +367,12 @@ class TextToSemantic(L.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
+        if self.lora_config is not None and self.alpha_scheduler < self.lora_config.lora_alpha:
+            self.alpha_scheduler += 0.1
+            self.set_lora_alpha(self.alpha_scheduler)
+        elif self.alpha_scheduler != self.lora_config.lora_alpha:
+            self.alpha_scheduler = self.lora_config.lora_alpha
+            self.set_lora_alpha(self.alpha_scheduler)
         return self._step(batch, batch_idx, "train")
 
     def validation_step(self, batch, batch_idx):
