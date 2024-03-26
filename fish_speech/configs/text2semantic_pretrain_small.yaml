@@ -59,7 +59,7 @@ model:
     _target_: fish_speech.models.text2semantic.llama.Transformer
     config:
       _target_: fish_speech.models.text2semantic.llama.ModelArgs
-      max_seq_len: 4096
+      max_seq_len: 4048
       vocab_size: 36408
       n_layer: 12
       n_head: 12
@@ -76,7 +76,7 @@ model:
     _target_: torch.optim.AdamW
     _partial_: true
     lr: 3e-4
-    weight_decay: 0.1
+    weight_decay: 0.01
     betas: [0.9, 0.95]
     eps: 1e-5
 

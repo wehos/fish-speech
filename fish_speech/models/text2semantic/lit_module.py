@@ -367,12 +367,13 @@ class TextToSemantic(L.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
-        if self.lora_config is not None and self.alpha_scheduler < self.lora_config.lora_alpha:
-            self.alpha_scheduler += 0.1
-            self.set_lora_alpha(self.alpha_scheduler)
-        elif self.alpha_scheduler != self.lora_config.lora_alpha:
-            self.alpha_scheduler = self.lora_config.lora_alpha
-            self.set_lora_alpha(self.alpha_scheduler)
+        if self.lora_config is not None:
+            if self.alpha_scheduler < self.lora_config.lora_alpha:
+                self.alpha_scheduler += 0.1
+                self.set_lora_alpha(self.alpha_scheduler)
+            elif self.alpha_scheduler != self.lora_config.lora_alpha:
+                self.alpha_scheduler = self.lora_config.lora_alpha
+                self.set_lora_alpha(self.alpha_scheduler)
         return self._step(batch, batch_idx, "train")
 
     def validation_step(self, batch, batch_idx):
