@@ -24,6 +24,7 @@ from fish_speech.text.symbols import pad as pad_symbol
 from fish_speech.text.symbols import pu_symbols
 from fish_speech.utils import RankedLogger
 from fish_speech.utils.braceexpand import braceexpand
+from fish_speech.datasets.prompts import prompt_dict, system_prompt
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -376,6 +377,7 @@ class AutoAugTextDataset(IterableDataset):
                     semantics=[sentence.semantics],
                     speaker=response.name if (self.use_speaker and idx == 0) else None,
                     add_bos=idx == 0,
+                    mode = mode,
                 )
 
                 all_tokens.append(tokens)
@@ -389,6 +391,7 @@ class AutoAugTextDataset(IterableDataset):
                 semantics=final_semantic,
                 speaker=response.name if self.use_speaker else None,
                 add_bos=True,
+                mode = mode,
             )
             all_tokens.append(tokens)
             all_labels.append(labels)
@@ -477,75 +480,198 @@ class AutoAugTextDataset(IterableDataset):
         semantics=list,
         speaker: Optional[str] = None,
         add_bos: bool = True,
+        mode: str = None,
     ):
-        if speaker is not None:
-            sentences = [f"[SPK: {speaker}]"] + sentences
-
-        final_text = "[INST] " + " ".join(sentences) + " [/INST]"
-        encoded = self.tokenizer.encode(
-            final_text,
-            add_special_tokens=False,
-            truncation=False,
-            max_length=10**6,
-        )
-        semantic_length = sum([len(i[0].values) for i in semantics])
-        prompt_length = len(encoded)
+        # if speaker is not None:
+        #     sentences = [f"[SPK: {speaker}]"] + sentences
         num_codebooks = (
             len(semantics[0]) if self.num_codebooks is None else self.num_codebooks
         )
-
         bos_bias = 1 if add_bos else 0
 
-        # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
-        pad_token_length = semantic_length + (
-            num_codebooks - 1 if self.use_delay_pattern else 0
-        )
-        tokens = (
-            encoded
-            + [self.tokenizer.pad_token_id] * pad_token_length
-            + [self.tokenizer.eos_token_id]
-        )
+        if mode in ['text', 'phones']:
+            task = random.choice(['text', 'asr', 'tts', 'voice'])
+        else:
+            task = random.choice(['tts', 'voice'])
 
-        if add_bos:
-            tokens = [self.tokenizer.bos_token_id] + tokens
+        if task == 'text':
+            encoded = self.tokenizer.encode(
+                " ".join(sentences),
+                add_special_tokens=False,
+                truncation=False,
+                max_length=10**6,
+            )
+            prompt_length = len(encoded)
+            codes = [
+                [CODEBOOK_PAD_TOKEN_ID]
+                * (prompt_length + bos_bias)
+                for i in range(num_codebooks)
+            ]
+            for idx, book in enumerate(codes):
+                book.append(CODEBOOK_EOS_TOKEN_ID)
+            tokens = encoded + [self.tokenizer.eos_token_id]
+            if add_bos:
+                tokens = [self.tokenizer.bos_token_id] + tokens
+            tokens = [tokens] + codes
+            tokens = torch.tensor(tokens, dtype=torch.long)
+            labels = tokens.clone()
+    
+            # Mask out the <s> tokens for semantic, predict semantic tokens only
+            # Since we don't mask out the input tokens, the language modeling still works
+            labels[1:, : (prompt_length + bos_bias)] = -100
 
-        # Codebook bos/padding: 0, eos: 1
-        # Implement delay pattern
-        codes = [
-            [CODEBOOK_PAD_TOKEN_ID]
-            * (prompt_length + bos_bias + (i if self.use_delay_pattern else 0))
-            for i in range(num_codebooks)
-        ]
-        for segment in semantics:
-            for book_idx, book in zip(range(num_codebooks), segment):
-                for j in book.values:
-                    codes[book_idx].append(int(j) + 2)
+        elif task == 'voice':
+            semantic_length = sum([len(i[0].values) for i in semantics])
+            prompt_length = 0
+            codes = [
+                [CODEBOOK_PAD_TOKEN_ID]
+                * (bos_bias + (i if self.use_delay_pattern else 0))
+                for i in range(num_codebooks)
+            ]
+            for segment in semantics:
+                for book_idx, book in zip(range(num_codebooks), segment):
+                    for j in book.values:
+                        codes[book_idx].append(int(j) + 2)
+    
+            for idx, book in enumerate(codes):
+                if self.use_delay_pattern:
+                    book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
+                book.append(CODEBOOK_EOS_TOKEN_ID)
+            bos_bias = 1 if add_bos else 0
+    
+            # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
+            pad_token_length = semantic_length + (
+                num_codebooks - 1 if self.use_delay_pattern else 0
+            )
+            tokens = [self.tokenizer.pad_token_id] * pad_token_length + [self.tokenizer.eos_token_id]
 
-        for idx, book in enumerate(codes):
-            if self.use_delay_pattern:
-                book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
-            book.append(CODEBOOK_EOS_TOKEN_ID)
-
-        tokens = [tokens] + codes
-
-        tokens = torch.tensor(tokens, dtype=torch.long)
-        labels = tokens.clone()
-
-        # Mask out the <s> tokens for semantic, predict semantic tokens only
-        # Since we don't mask out the input tokens, the language modeling still works
-        labels[1:, : (prompt_length + bos_bias)] = -100
-
+            if add_bos:
+                tokens = [self.tokenizer.bos_token_id] + tokens
+                
+            tokens = [tokens] + codes
+            tokens = torch.tensor(tokens, dtype=torch.long)
+            labels = tokens.clone()
+            labels[1:, : bos_bias] = -100
+        elif task == 'tts':
+            prompt = system_prompt
+            final_text = prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
+            encoded = self.tokenizer.encode(
+                final_text,
+                add_special_tokens=False,
+                truncation=False,
+                max_length=10**6,
+            )
+            
+            # Codebook bos/padding: 0, eos: 1
+            # Implement delay pattern
+            prompt_length = len(encoded)
+            semantic_length = sum([len(i[0].values) for i in semantics])
+            codes = [
+                [CODEBOOK_PAD_TOKEN_ID]
+                * (prompt_length + bos_bias + (i if self.use_delay_pattern else 0))
+                for i in range(num_codebooks)
+            ]
+            for segment in semantics:
+                for book_idx, book in zip(range(num_codebooks), segment):
+                    for j in book.values:
+                        codes[book_idx].append(int(j) + 2)
+    
+            for idx, book in enumerate(codes):
+                if self.use_delay_pattern:
+                    book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
+                book.append(CODEBOOK_EOS_TOKEN_ID)
+                
+    
+            bos_bias = 1 if add_bos else 0
+    
+            # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
+            pad_token_length = semantic_length + (
+                num_codebooks - 1 if self.use_delay_pattern else 0
+            )
+            tokens = (
+                encoded
+                + [self.tokenizer.pad_token_id] * pad_token_length
+                + [self.tokenizer.eos_token_id]
+            )
+    
+            if add_bos:
+                tokens = [self.tokenizer.bos_token_id] + tokens
+            tokens = [tokens] + codes
+    
+            tokens = torch.tensor(tokens, dtype=torch.long)
+            labels = tokens.clone()
+    
+            # Mask out the <s> tokens for semantic, predict semantic tokens only
+            # Since we don't mask out the input tokens, the language modeling still works
+            labels[1:, : (prompt_length + bos_bias)] = -100
+            
+        elif task == 'asr':
+            prompt = system_prompt
+            prefix = prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
+            suffix = " ASSISTANT: "+ ' '.join(sentences)
+            prefix = self.tokenizer.encode(
+                prefix,
+                add_special_tokens=False,
+                truncation=False,
+                max_length=10**6,
+            )
+            suffix = self.tokenizer.encode(
+                suffix,
+                add_special_tokens=False,
+                truncation=False,
+                max_length=10**6,
+            )
+            
+            # Codebook bos/padding: 0, eos: 1
+            # Implement delay pattern
+            prompt_length = len(prefix) + len(suffix)
+            semantic_length = sum([len(i[0].values) for i in semantics])
+            codes = [
+                [CODEBOOK_PAD_TOKEN_ID] * (len(prefix) + bos_bias + (i if self.use_delay_pattern else 0))
+                for i in range(num_codebooks)
+            ]
+            for segment in semantics:
+                for book_idx, book in zip(range(num_codebooks), segment):
+                    for j in book.values:
+                        codes[book_idx].append(int(j) + 2)
+            for idx, book in enumerate(codes):
+                book.extend([CODEBOOK_PAD_TOKEN_ID] * len(suffix))
+                if self.use_delay_pattern:
+                    book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
+                book.append(CODEBOOK_EOS_TOKEN_ID)
+    
+            # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
+            pad_token_length = semantic_length + (
+                num_codebooks - 1 if self.use_delay_pattern else 0
+            )
+            tokens = (
+                prefix
+                + [self.tokenizer.pad_token_id] * pad_token_length
+                + suffix
+                + [self.tokenizer.eos_token_id]
+            )
+    
+            if add_bos:
+                tokens = [self.tokenizer.bos_token_id] + tokens
+            tokens = [tokens] + codes
+    
+            tokens = torch.tensor(tokens, dtype=torch.long)
+            labels = tokens.clone()
+    
+            # Mask out the <s> tokens for semantic, predict semantic tokens only
+            # Since we don't mask out the input tokens, the language modeling still works
+            labels[1:, :(prompt_length + bos_bias)] = -100
+        
         tokens = tokens[:, :-1]
         labels = labels[:, 1:]
 
         # Verify the padding is correct, and the last token is eos
         assert add_bos is False or tokens[0, 0] == self.tokenizer.bos_token_id
-        assert (tokens[1:, : prompt_length + bos_bias] == CODEBOOK_PAD_TOKEN_ID).all()
+        # assert (tokens[1:, :prompt_length + bos_bias] == CODEBOOK_PAD_TOKEN_ID).all()
         assert labels[0, -1] == self.tokenizer.eos_token_id
         assert (labels[1:, -1] == CODEBOOK_EOS_TOKEN_ID).all()
 
         return tokens, labels
-
 
 @dataclass
 class TextDataCollator:

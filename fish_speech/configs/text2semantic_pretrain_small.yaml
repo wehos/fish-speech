@@ -4,7 +4,7 @@ defaults:
 
 project: text2semantic_pretrain_small_4_in_8_codebooks
 max_length: 2048
-use_delay_pattern: true
+use_delay_pattern: false
 
 # Lightning Trainer
 trainer:
