@@ -22,6 +22,7 @@ RUN git clone https://github.com/pytorch/audio --recursive --depth 1 && \
 RUN pip3 install --upgrade pip && \
     pip3 install ninja packaging && \
     FLASH_ATTENTION_FORCE_BUILD=TRUE pip3 install git+https://github.com/Dao-AILab/flash-attention.git
+RUN pip3 install -U deepspeed
 
 # Test flash-attn
 RUN python3 -c "from flash_attn import flash_attn_varlen_func"
