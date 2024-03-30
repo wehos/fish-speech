@@ -376,7 +376,7 @@ class AutoAugTextDataset(IterableDataset):
                     sentences=[text],
                     semantics=[sentence.semantics],
                     speaker=response.name if (self.use_speaker and idx == 0) else None,
-                    add_bos=idx == 0,
+                    add_bos= True,
                     mode = mode,
                 )
 
@@ -518,7 +518,7 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, : (prompt_length + bos_bias)] = -100
+            labels[1:, :(prompt_length + bos_bias)] = -100
 
         elif task == 'voice':
             semantic_length = sum([len(i[0].values) for i in semantics])
@@ -537,7 +537,6 @@ class AutoAugTextDataset(IterableDataset):
                 if self.use_delay_pattern:
                     book.extend([CODEBOOK_PAD_TOKEN_ID] * (len(codes) - idx - 1))
                 book.append(CODEBOOK_EOS_TOKEN_ID)
-            bos_bias = 1 if add_bos else 0
     
             # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
             pad_token_length = semantic_length + (
@@ -552,9 +551,9 @@ class AutoAugTextDataset(IterableDataset):
             tokens = torch.tensor(tokens, dtype=torch.long)
             labels = tokens.clone()
             labels[1:, : bos_bias] = -100
+            
         elif task == 'tts':
-            prompt = system_prompt
-            final_text = prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
+            final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
             encoded = self.tokenizer.encode(
                 final_text,
                 add_special_tokens=False,
@@ -606,8 +605,7 @@ class AutoAugTextDataset(IterableDataset):
             labels[1:, : (prompt_length + bos_bias)] = -100
             
         elif task == 'asr':
-            prompt = system_prompt
-            prefix = prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
+            prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
             suffix = " ASSISTANT: "+ ' '.join(sentences)
             prefix = self.tokenizer.encode(
                 prefix,
