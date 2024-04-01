@@ -2,7 +2,7 @@ defaults:
   - text2semantic_pretrain_small
   - _self_
 
-project: text2semantic_pretrain_multitask_vicuna7b
+project: text2semantic_pretrain_multitask_vicuna7b_nophones
 max_length: 2048
 ckpt_path: checkpoints/consolidated.00.pth
 resume_weights_only: true
@@ -15,14 +15,26 @@ trainer:
     zero_optimization: true
     pin_memory: true
 
+train_dataset:
+  _target_: fish_speech.datasets.text.AutoAugTextDataset
+  use_speaker: false
+  phones_prob: 0.
+  interactive_prob: 0.
+  use_delay_pattern: false
 
+val_dataset:
+  _target_: fish_speech.datasets.text.AutoAugTextDataset
+  use_speaker: false
+  phones_prob: 0.
+  interactive_prob: 0.
+  use_delay_pattern: false
 
 data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 6
-  batch_size: 8
+  batch_size: 10
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
@@ -44,3 +56,11 @@ model:
       num_warmup_steps: 2000
       num_training_steps: ${trainer.max_steps}
       final_lr_ratio: 0.1
+
+callbacks:
+  model_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    filename: "step_{step:09d}"
+    save_last: true # additionally always save an exact copy of the last checkpoint to a file last.ckpt
+    save_top_k: 0 # save 5 latest checkpoints
+    every_n_train_steps: 5000 # save checkpoints every 5000 steps
