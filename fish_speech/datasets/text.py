@@ -365,10 +365,12 @@ class AutoAugTextDataset(IterableDataset):
                 sentence.text, sentence.phones, mode=mode
             )
             remaining_tokens -= length + len(sentence.semantics[0].values)
-
+            
+            assert not use_interactive, 'My new multi-task implementation does not support interactive mode. Will leave it for sft later'
             if use_interactive is False:
                 final_text.append(text)
                 final_semantic.append(sentence.semantics)
+                
             else:
                 # For interactive mode, we only apply speaker for the first sentence
                 # [INST] [SPK: speaker] text [/INST] ... [INST] text [/INST]
@@ -490,7 +492,7 @@ class AutoAugTextDataset(IterableDataset):
         bos_bias = 1 if add_bos else 0
 
         if mode in ['text', 'phones']:
-            task = random.choice(['text', 'asr', 'tts', 'voice'])
+            task = random.choice(['asr', 'tts', 'voice'])
         else:
             task = random.choice(['tts', 'voice'])
 
@@ -518,7 +520,7 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, :(prompt_length + bos_bias)] = -100
+            labels[1:, :-1] = -100
 
         elif task == 'voice':
             semantic_length = sum([len(i[0].values) for i in semantics])
@@ -550,7 +552,7 @@ class AutoAugTextDataset(IterableDataset):
             tokens = [tokens] + codes
             tokens = torch.tensor(tokens, dtype=torch.long)
             labels = tokens.clone()
-            labels[1:, : bos_bias] = -100
+            labels[0, :-1] = -100
             
         elif task == 'tts':
             final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
@@ -602,7 +604,8 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, : (prompt_length + bos_bias)] = -100
+            labels[0, :-1] = -100
+            labels[1:, :prompt_length] = -100
             
         elif task == 'asr':
             prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
@@ -658,7 +661,9 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, :(prompt_length + bos_bias)] = -100
+            labels[1:, :-1] = -100
+            labels[0, :(len(prefix) + pad_token_length)] = -100
+            
         
         tokens = tokens[:, :-1]
         labels = labels[:, 1:]
@@ -722,7 +727,7 @@ class TextDataCollator:
                 _labels = F.pad(
                     _labels, (0, self.max_length - _labels.size(1)), value=-100
                 )
-
+                
             tokens.append(_tokens)
             attention_masks.append(_attention_mask)
             labels.append(_labels)

@@ -86,11 +86,9 @@ class TextToSemantic(L.LightningModule):
         for n, p in self.model.added_output.named_parameters():
             p.requires_grad = True
         self.alpha_scheduler = 0
-                
-    def set_lora_alpha(self, alpha):
-        if isinstance(self.model.tok_embeddings, lora.Embedding):
-            self.model.tok_embeddings.lora_alpha += alpha
-        
+        self.lora_steps = 0
+   
+    def count_lora_linears(self):
         if not getattr(self, 'lora_linears', None):
             linears = [(self.model, "output")]
             for layer in self.model.layers:
@@ -108,6 +106,30 @@ class TextToSemantic(L.LightningModule):
                 if isinstance(linear_layer, lora.Linear):
                     lora_linears.append(linear_layer)
             self.lora_linears = lora_linears
+
+    def merge_and_reset_lora(self):
+        if isinstance(self.model.tok_embeddings, lora.Embedding):
+            adapter_name = self.model.tok_embeddings.active_adapters
+            self.model.tok_embeddings.merge()
+            self.model.tok_embeddings.merged_adapters = []
+            self.model.tok_embeddings.reset_lora_parameters(adapter_name, init_lora_weights=True)
+
+        if not getattr(self, 'lora_linears', None):
+            self.count_lora_linears()
+
+        for linear_layer in self.lora_linears:
+            adapter_name = linear_layer.active_adapters
+            linear_layer.merge()
+            linear_layer.merged_adapters = []
+            linear_layer.reset_lora_parameters(adapter_name, init_lora_weights=True)
+
+    def set_lora_alpha(self, alpha):
+        if isinstance(self.model.tok_embeddings, lora.Embedding):
+            self.model.tok_embeddings.lora_alpha = alpha
+            self.model.tok_embeddings.scaling = self.model.tok_embeddings.lora_alpha / self.model.tok_embeddings.r
+        
+        if not getattr(self, 'lora_linears', None):
+            self.count_lora_linears()
 
         for linear_layer in self.lora_linears:
             linear_layer.lora_alpha = alpha
@@ -369,11 +391,14 @@ class TextToSemantic(L.LightningModule):
     def training_step(self, batch, batch_idx):
         if self.lora_config is not None:
             if self.alpha_scheduler < self.lora_config.lora_alpha:
-                self.alpha_scheduler += 0.1
+                self.alpha_scheduler += 0.05
                 self.set_lora_alpha(self.alpha_scheduler)
             elif self.alpha_scheduler != self.lora_config.lora_alpha:
                 self.alpha_scheduler = self.lora_config.lora_alpha
                 self.set_lora_alpha(self.alpha_scheduler)
+            self.lora_steps += 1
+            if self.lora_steps % 1000 == 0:
+                self.merge_and_reset_lora()
         return self._step(batch, batch_idx, "train")
 
     def validation_step(self, batch, batch_idx):
