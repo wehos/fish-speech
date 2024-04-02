@@ -359,6 +359,29 @@ class AutoAugTextDataset(IterableDataset):
                 # Repeat the same sentence
                 sentence = samples[-1]
             else:
+                def count_substrings(s, length=4):
+                    counts = {}
+                    for i in range(len(s) - length + 1):
+                        substring = s[i:i+length]
+                        if substring in counts:
+                            counts[substring] += 1
+                        else:
+                            counts[substring] = 1
+                    if len(counts)>0:
+                        return max(counts.values())
+                    else:
+                        return 0
+                while count_substrings(samples[-1].text)>7 and len(samples)>0:
+                    print(samples.pop().text)
+                    if len(all_tokens) > 0:
+                        if random.random() > (1-0.15*(len(all_tokens))):
+                            break
+                        else:
+                            all_tokens, all_labels = [], []
+                if len(samples)==0:
+                    if len(all_tokens) > 0:
+                        break
+                    return None
                 sentence = samples.pop()
 
             text, length = self.tokenize_sentence(
@@ -492,7 +515,7 @@ class AutoAugTextDataset(IterableDataset):
         bos_bias = 1 if add_bos else 0
 
         if mode in ['text', 'phones']:
-            task = random.choice(['asr', 'tts', 'voice'])
+            task = random.choice(['asr', 'voice'])
         else:
             task = random.choice(['tts', 'voice'])
 
@@ -608,9 +631,6 @@ class AutoAugTextDataset(IterableDataset):
             labels[1:, :prompt_length] = -100
             
         elif task == 'asr':
-            pairs = list(zip(sentences, semantics))
-            random.shuffle(pairs)
-            sentences, semantics = [i[0] for i in pairs], [i[1] for i in pairs]
             prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
             suffix = " ASSISTANT: "+ ' '.join(sentences)
             prefix = self.tokenizer.encode(
@@ -817,11 +837,11 @@ if __name__ == "__main__":
 
     ds = AutoAugTextDataset(
         tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),
-        use_speaker=True,
-        interactive_prob=1.0,
-        phones_prob=1.0,
+        use_speaker=False,
+        interactive_prob=.0,
+        phones_prob=.0,
         use_negative_samples=False,
-        num_codebooks=4,
+        num_codebooks=8,
     )
 
     # ds = AutoAugTextDataset(
@@ -836,11 +856,11 @@ if __name__ == "__main__":
         train_dataset=ds,
         val_dataset=ds,
         tokenizer=ds.tokenizer,
-        batch_size=2,
+        batch_size=1,
         max_length=1024,
         num_workers=0,
     )
 
     for batch in tqdm(dm.train_dataloader()):
-        print(batch)
-        break
+        pass
+        #print(batch)
