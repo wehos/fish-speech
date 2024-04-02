@@ -9,9 +9,9 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
 import fish_speech.utils as utils
 from fish_speech.models.text2semantic.llama import Transformer
-
+import torch.nn as nn
+import math
 log = utils.RankedLogger(__name__, rank_zero_only=True)
-
 
 @dataclass
 class LoraConfig:
@@ -109,19 +109,21 @@ class TextToSemantic(L.LightningModule):
 
     def merge_and_reset_lora(self):
         if isinstance(self.model.tok_embeddings, lora.Embedding):
-            adapter_name = self.model.tok_embeddings.active_adapters
-            self.model.tok_embeddings.merge()
-            self.model.tok_embeddings.merged_adapters = []
-            self.model.tok_embeddings.reset_lora_parameters(adapter_name, init_lora_weights=True)
+            with torch.no_grad():
+                self.model.tok_embeddings.weight.data += (self.model.tok_embeddings.lora_B @ self.model.tok_embeddings.lora_A).transpose(0, 1) * self.model.tok_embeddings.scaling
+            nn.init.zeros_(self.model.tok_embeddings.lora_A)
+            nn.init.normal_(self.model.tok_embeddings.lora_B)
 
         if not getattr(self, 'lora_linears', None):
             self.count_lora_linears()
 
         for linear_layer in self.lora_linears:
-            adapter_name = linear_layer.active_adapters
-            linear_layer.merge()
-            linear_layer.merged_adapters = []
-            linear_layer.reset_lora_parameters(adapter_name, init_lora_weights=True)
+            def T(w):
+                return w.transpose(0, 1) if linear_layer.fan_in_fan_out else w
+            with torch.no_grad():
+                linear_layer.weight.data += T(linear_layer.lora_B @ linear_layer.lora_A) * linear_layer.scaling
+            nn.init.kaiming_uniform_(linear_layer.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(linear_layer.lora_B)
 
     def set_lora_alpha(self, alpha):
         if isinstance(self.model.tok_embeddings, lora.Embedding):

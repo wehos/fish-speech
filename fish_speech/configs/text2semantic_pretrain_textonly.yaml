@@ -8,7 +8,7 @@ ckpt_path: checkpoints/consolidated.00.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
     stage: 2 
@@ -34,7 +34,7 @@ data:
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 6
-  batch_size: 10
+  batch_size: 16
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   

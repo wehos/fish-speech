@@ -608,6 +608,9 @@ class AutoAugTextDataset(IterableDataset):
             labels[1:, :prompt_length] = -100
             
         elif task == 'asr':
+            pairs = list(zip(sentences, semantics))
+            random.shuffle(pairs)
+            sentences, semantics = [i[0] for i in pairs], [i[1] for i in pairs]
             prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
             suffix = " ASSISTANT: "+ ' '.join(sentences)
             prefix = self.tokenizer.encode(
