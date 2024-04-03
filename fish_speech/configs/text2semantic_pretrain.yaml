@@ -15,25 +15,73 @@ trainer:
     zero_optimization: true
     pin_memory: true
 
+# Lightning Trainer
+trainer:
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: 'norm'
+  max_steps: 100_000
+  precision: bf16-true
+  limit_val_batches: 10
 
+# Dataset Configuration
+tokenizer:
+  _target_: transformers.AutoTokenizer.from_pretrained
+  pretrained_model_name_or_path: fishaudio/speech-lm-v1
+
+# Dataset Configuration
+train_dataset:
+  _target_: fish_speech.datasets.text.AutoAugTextDataset
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  num_codebooks: ${model.model.config.num_codebooks}
+  use_speaker: false
+  phones_prob: 0.
+  interactive_prob: 0.
+
+val_dataset:
+  _target_: fish_speech.datasets.text.AutoAugTextDataset
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  num_codebooks: ${model.model.config.num_codebooks}
+  use_speaker: false
+  phones_prob: 0.
+  interactive_prob: 0.
 
 data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 6
-  batch_size: 8
+  batch_size: 16
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
-# Model Configuration
 model:
+  _target_: fish_speech.models.text2semantic.TextToSemantic
+
   model:
+    _target_: fish_speech.models.text2semantic.llama.NaiveTransformer
     config:
+      _target_: fish_speech.models.text2semantic.llama.DualARModelArgs
       max_seq_len: 4048
+      vocab_size: 36408
       n_layer: 32
+      n_fast_layer: 4
       n_head: 32
       dim: 4096
+      rope_base: 10000
+      norm_eps: 1e-5
+      num_codebooks: 8  # input/output codebook size
+      codebook_size: 264 # codebook size 256 + 2 special tokens
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 3e-4
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+    eps: 1e-5
 
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.LambdaLR
@@ -41,6 +89,6 @@ model:
     lr_lambda:
       _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
-      num_warmup_steps: 2000
+      num_warmup_steps: 1000
       num_training_steps: ${trainer.max_steps}
       final_lr_ratio: 0.1

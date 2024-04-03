@@ -7,7 +7,7 @@ import torch.nn as nn
 from einops import rearrange
 from torch import Tensor
 from torch.nn import functional as F
-from transformers import LlamaModel, LlamaConfig
+from torch.utils.checkpoint import checkpoint
 
 
 def find_multiple(n: int, k: int) -> int:
@@ -17,7 +17,7 @@ def find_multiple(n: int, k: int) -> int:
 
 
 @dataclass
-class ModelArgs:
+class BaseModelArgs:
     vocab_size: int = 32000
     n_layer: int = 32
     n_head: int = 32
@@ -30,7 +30,7 @@ class ModelArgs:
     max_seq_len: int = 2048
     dropout: float = 0.0
 
-    # Additional decoding heads
+    # Codebook configs
     codebook_size: int = 160
     num_codebooks: int = 4
     num_in_codebooks: Optional[int] = None
@@ -38,9 +38,6 @@ class ModelArgs:
 
     # Gradient checkpointing
     use_gradient_checkpointing: bool = True
-
-    # NEFT
-    neft_alpha: float = 0
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -52,6 +49,16 @@ class ModelArgs:
         if self.num_in_codebooks is None:
             self.num_in_codebooks = self.num_codebooks
         self.head_dim = self.dim // self.n_head
+
+
+@dataclass
+class NaiveModelArgs(BaseModelArgs):
+    pass
+
+
+@dataclass
+class DualARModelArgs(BaseModelArgs):
+    n_fast_layer: int = 4
 
 
 class KVCache(nn.Module):
@@ -80,20 +87,26 @@ class TransformerForwardResult:
     token_logits: Tensor
     codebook_logits: Tensor
 
-class Transformer(nn.Module):
-    def __init__(self, config: ModelArgs) -> None:
+@dataclass
+class BaseTransformerForwardResult:
+    logits: Tensor
+    hidden_states: Tensor
+
+
+class BaseTransformer(nn.Module):
+    def __init__(self, config: BaseModelArgs) -> None:
         super().__init__()
         self.config = config
 
         self.tok_embeddings = nn.Embedding(32000, config.dim)
         self.added_embeddings = nn.Embedding(config.vocab_size + config.codebook_size * config.num_in_codebooks - 32000, config.dim)
-        
+
         self.layers = nn.ModuleList(
-            TransformerBlock(config) for _ in range(config.n_layer)
+            TransformerBlock(config, use_sdpa=True) for _ in range(config.n_layer)
         )
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, 32000, bias=False)
-        self.added_output = nn.Linear(config.dim, config.vocab_size + config.codebook_size * config.num_codebooks - 32000, bias=False)
+        self.added_output = nn.Linear(config.dim, config.vocab_size - 32000, bias=False)
 
         self.register_buffer(
             "freqs_cis",
@@ -102,6 +115,7 @@ class Transformer(nn.Module):
                 config.dim // config.n_head,
                 config.rope_base,
             ),
+            persistent=False,
         )
         self.register_buffer(
             "causal_mask",
@@ -112,6 +126,7 @@ class Transformer(nn.Module):
                     dtype=torch.bool,
                 )
             ),
+            persistent=False,
         )
 
         # For kv cache
@@ -148,10 +163,6 @@ class Transformer(nn.Module):
             )
 
     def embed(self, x: Tensor) -> Tensor:
-        # Here we want to merge the embeddings of the codebooks
-        if self.config.num_in_codebooks == 0:
-            return self.embeddings(x[:, 0])
-
         vocab_embeds = [self.embeddings(x[:, 0])]
         for i in range(self.config.num_in_codebooks):
             emb = self.embeddings(
@@ -163,60 +174,16 @@ class Transformer(nn.Module):
         x = torch.stack(vocab_embeds, dim=3)
         x = x.sum(dim=3)
 
-        if self.config.neft_alpha > 0 and self.training:
-            # alpha / sqrt(L * D)
-            scaled_alpha = self.config.neft_alpha / math.sqrt(
-                self.config.dim * x.shape[2]
-            )
-            x += torch.rand_like(x) * scaled_alpha
-
-            #print("NEFT alpha:", scaled_alpha)
-
         return x
 
-    def compute(
-        self,
-        x: Tensor,
-        freqs_cis: Tensor,
-        mask: Tensor,
-        input_pos: Optional[Tensor] = None,
-    ) -> TransformerForwardResult:
-        for layer in self.layers:
-            if self.config.use_gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(
-                    layer, x, freqs_cis, mask, input_pos, use_reentrant=True
-                )
-            else:
-                x = layer(x, freqs_cis, mask, input_pos=input_pos)
-
-        x = self.norm(x)
-        logits = self.combined_output(x)
-        token_logits = logits[:, :, : self.config.vocab_size]
-
-        if self.config.num_codebooks == 0:
-            return TransformerForwardResult(
-                token_logits=token_logits,
-                codebook_logits=None,
-            )
-
-        codebook_logits = logits[:, :, self.config.vocab_size :]
-        codebook_logits = rearrange(
-            codebook_logits, "b n (c d) -> b n c d", c=self.config.num_codebooks
-        )
-
-        return TransformerForwardResult(
-            token_logits=token_logits,
-            codebook_logits=codebook_logits,
-        )
-
     def forward(
-        self, x: Tensor, key_padding_mask: Optional[Tensor] = None
-    ) -> TransformerForwardResult:
+        self, inp: Tensor, key_padding_mask: Optional[Tensor] = None
+    ) -> BaseTransformerForwardResult:
         # x: (batch, num_codebooks + 1, seq_len)
-        seq_len = x.size(2)
+        seq_len = inp.size(2)
 
         # Here we want to merge the embeddings of the codebooks
-        x = self.embed(x)
+        x = self.embed(inp)
 
         mask = self.causal_mask[None, None, :seq_len, :seq_len]  # (B, N, Q, K)
         freqs_cis = self.freqs_cis[:seq_len]
@@ -227,11 +194,25 @@ class Transformer(nn.Module):
         if key_padding_mask is not None:
             mask = mask & key_padding_mask[:, None, None, :].logical_not()
 
-        return self.compute(x, freqs_cis, mask)
+        for layer in self.layers:
+            if self.config.use_gradient_checkpointing and self.training:
+                x = checkpoint(layer, x, freqs_cis, mask, use_reentrant=True)
+            else:
+                x = layer(x, freqs_cis, mask)
 
-    def forward_generate(self, x: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
-        # x: (batch, num_codebooks + 1, 1)
+        # We got slow_out here
+        slow_out = self.norm(x)
+        token_logits = self.combined_output(slow_out)
 
+        return BaseTransformerForwardResult(
+            logits=token_logits,
+            hidden_states=x,
+        )
+
+    def forward_generate(
+        self, x: Tensor, input_pos: Optional[Tensor] = None
+    ) -> BaseTransformerForwardResult:
+        # This is used for generation, optimized for torch compile
         assert (
             self.max_seq_len != -1 and self.max_batch_size != -1
         ), "Please call setup_caches before forward_generate"
@@ -243,16 +224,189 @@ class Transformer(nn.Module):
         ]  # (B, N, Q, K)
         freqs_cis = self.freqs_cis[input_pos]
 
-        # TODO: support key padding mask for generation
+        for layer in self.layers:
+            x = layer(x, freqs_cis, mask, input_pos=input_pos)
 
-        return self.compute(x, freqs_cis, mask, input_pos=input_pos)
+        # If prefill, we only calculate the logits of last token
+        if x.size(1) > 1:
+            x = x[:, -1:]
+
+        # We got slow_out here
+        slow_out = self.norm(x)
+        token_logits = self.output(slow_out)
+
+        return BaseTransformerForwardResult(
+            logits=token_logits,
+            hidden_states=x,
+        )
+
+
+class NaiveTransformer(BaseTransformer):
+    def __init__(self, config: NaiveModelArgs) -> None:
+        super().__init__(config)
+
+        self.codebook_norm = RMSNorm(config.dim, eps=config.norm_eps)
+        self.codebook_output = nn.Linear(
+            config.dim,
+            config.codebook_size * config.num_codebooks,
+            bias=False,
+        )
+
+    def decode(self, result: BaseTransformerForwardResult) -> TransformerForwardResult:
+        token_logits = result.logits
+        x = result.hidden_states
+
+        # Codebook
+        codebook_logits = self.codebook_output(self.codebook_norm(x))
+        codebook_logits = rearrange(
+            codebook_logits, "b n (c d) -> b n c d", c=self.config.num_codebooks
+        )
+
+        return TransformerForwardResult(
+            token_logits=token_logits,
+            codebook_logits=codebook_logits,
+        )
+
+    def forward(
+        self, inp: Tensor, key_padding_mask: Optional[Tensor] = None
+    ) -> TransformerForwardResult:
+        result = super().forward(inp, key_padding_mask)
+        return self.decode(result)
+
+    def forward_generate(
+        self, x: Tensor, input_pos: Optional[Tensor] = None
+    ) -> TransformerForwardResult:
+        result = super().forward_generate(x, input_pos)
+        return self.decode(result)
+
+
+class DualARTransformer(BaseTransformer):
+    def __init__(self, config: DualARModelArgs) -> None:
+        super().__init__(config)
+
+        # Fast transformer
+        self.fast_embeddings = nn.Embedding(
+            config.codebook_size, config.dim, padding_idx=config.codebook_padding_idx
+        )
+
+        # The equivalent bs is so large that sdpa doesn't work
+        self.fast_layers = nn.ModuleList(
+            TransformerBlock(config, use_sdpa=False) for _ in range(config.n_fast_layer)
+        )
+        self.fast_norm = RMSNorm(config.dim, eps=config.norm_eps)
+        self.fast_output = nn.Linear(
+            config.dim,
+            config.codebook_size,
+            bias=False,
+        )
+
+    def setup_caches(
+        self, max_batch_size: int, max_seq_len: int, dtype: torch.dtype = torch.bfloat16
+    ):
+        super().setup_caches(max_batch_size, max_seq_len, dtype)
+
+        head_dim = self.config.dim // self.config.n_head
+
+        # Fast transformer
+        # The max seq len here is the number of codebooks
+        for b in self.fast_layers:
+            b.attention.kv_cache = KVCache(
+                max_batch_size,
+                self.config.num_codebooks,
+                self.config.n_local_heads,
+                head_dim,
+                dtype=dtype,
+            )
+
+    def forward(
+        self, inp: Tensor, key_padding_mask: Optional[Tensor] = None
+    ) -> TransformerForwardResult:
+        parent_result = super().forward(inp, key_padding_mask)
+        token_logits = parent_result.logits
+        x = parent_result.hidden_states
+
+        # Fast transformer
+        fast_seq_len = self.config.num_codebooks
+        fast_mask = self.causal_mask[
+            None, None, :fast_seq_len, :fast_seq_len
+        ]  # (B, N, Q, K)
+        fast_freqs_cis = self.freqs_cis[:fast_seq_len]
+
+        # Drop the last token and rotate left
+        codebooks = inp[:, 1:-1, 1:]
+        codebooks = F.pad(codebooks, (0, 1), value=self.config.codebook_padding_idx)
+        codebook_embeddings = self.fast_embeddings(codebooks)
+        x = torch.cat([x[:, None], codebook_embeddings], dim=1)
+        b, s = x.size(0), x.size(2)
+        x = rearrange(x, "b n s d -> (b s) n d")  # flatten the batch and seq_len
+
+        # Remove padded part
+        codebooks = rearrange(codebooks, "b n s -> (b s) n")
+        codebook_mask = (codebooks == self.config.codebook_padding_idx).all(dim=-1)
+        x_bs, x_len = x.size(0), x.size(1)
+        x = x[~codebook_mask]
+
+        for layer in self.fast_layers:
+            if self.config.use_gradient_checkpointing and self.training:
+                x = checkpoint(layer, x, fast_freqs_cis, fast_mask, use_reentrant=True)
+            else:
+                x = layer(x, fast_freqs_cis, fast_mask)
+
+        # unflatten the batch and num_codebooks
+        fast_out = self.fast_norm(x)
+        codebook_logits = self.fast_output(fast_out)
+
+        # Re-pad the codebook_logits
+        buffer = torch.zeros(
+            x_bs,
+            x_len,
+            codebook_logits.size(-1),
+            device=codebook_logits.device,
+            dtype=codebook_logits.dtype,
+        )
+        buffer[~codebook_mask] = codebook_logits
+        codebook_logits = buffer
+
+        assert codebook_logits.shape[1] == self.config.num_codebooks
+        codebook_logits = rearrange(
+            codebook_logits,
+            "(b s) n d -> b s n d",
+            b=b,
+            s=s,
+            n=self.config.num_codebooks,
+        )
+
+        return TransformerForwardResult(
+            token_logits=token_logits,
+            codebook_logits=codebook_logits,
+        )
+
+    def forward_generate_fast(
+        self, x: Tensor, input_pos: Optional[Tensor] = None
+    ) -> Tensor:
+        # Fast transformer
+        x = x.view(1, 1, -1)
+
+        fast_mask = self.causal_mask[
+            None, None, input_pos, : self.config.num_codebooks
+        ]  # (B, N, Q, K)
+        fast_freqs_cis = self.freqs_cis[input_pos]
+
+        for layer in self.fast_layers:
+            x = layer(x, fast_freqs_cis, fast_mask, input_pos=input_pos)
+
+        # unflatten the batch and num_codebooks
+        fast_out = self.fast_norm(x)  # only take the last token
+        codebook_logits = self.fast_output(fast_out)
+
+        return codebook_logits
 
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelArgs) -> None:
+    def __init__(self, config: BaseModelArgs, use_sdpa: bool = True) -> None:
         super().__init__()
-        self.attention = Attention(config)
+        self.attention = Attention(config, use_sdpa=use_sdpa)
         self.feed_forward = FeedForward(config)
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
@@ -266,7 +420,7 @@ class TransformerBlock(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, config: ModelArgs):
+    def __init__(self, config: BaseModelArgs, use_sdpa: bool = True):
         super().__init__()
         assert config.dim % config.n_head == 0
 
@@ -281,6 +435,7 @@ class Attention(nn.Module):
         self.head_dim = config.head_dim
         self.n_local_heads = config.n_local_heads
         self.dim = config.dim
+        self.use_sdpa = use_sdpa
         self._register_load_state_dict_pre_hook(self.load_hook)
 
     def load_hook(self, state_dict, prefix, *args):
@@ -316,21 +471,59 @@ class Attention(nn.Module):
 
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
-        y = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=mask,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
+
+        if self.use_sdpa:
+            y = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+        else:
+            y = self.eq_scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
 
         y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
         return self.wo(y)
 
+    def eq_scaled_dot_product_attention(
+        self,
+        query,
+        key,
+        value,
+        attn_mask=None,
+        dropout_p=0.0,
+    ) -> torch.Tensor:
+        # This is a standard scaled dot product attention
+        # It's low efficient, but it doesn't raise cuda error
+
+        L, S = query.size(-2), key.size(-2)
+        scale_factor = 1 / math.sqrt(query.size(-1))
+        attn_bias = torch.zeros(1, 1, L, S, dtype=query.dtype, device=query.device)
+
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+            else:
+                attn_bias += attn_mask
+
+        attn_weight = query @ key.transpose(-2, -1) * scale_factor
+        attn_weight += attn_bias
+        attn_weight = torch.softmax(attn_weight, dim=-1)
+        attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+
+        return attn_weight @ value
+
 
 class FeedForward(nn.Module):
-    def __init__(self, config: ModelArgs) -> None:
+    def __init__(self, config: BaseModelArgs) -> None:
         super().__init__()
         self.w1 = nn.Linear(config.dim, config.intermediate_size, bias=False)
         self.w3 = nn.Linear(config.dim, config.intermediate_size, bias=False)
@@ -381,19 +574,20 @@ def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
 
 
 if __name__ == "__main__":
-    args = ModelArgs(
+    args = DualARModelArgs(
         max_seq_len=4096,
         vocab_size=32312,
         n_layer=12,
+        n_fast_layer=4,
         n_head=12,
         dim=768,
         rope_base=10000,
         norm_eps=1e-5,
-        codebook_size=0,
-        num_codebooks=0,
+        codebook_size=128,
+        num_codebooks=4,
     )
 
-    model = Transformer(args)
+    model = DualARTransformer(args)
     model = model.cuda().bfloat16()
     print("Total params:", sum(i.numel() for i in model.parameters()) / 1024 / 1024)
 
@@ -402,4 +596,4 @@ if __name__ == "__main__":
     key_padding_mask[0, 2:] = True
     x1 = model(inputs, key_padding_mask=key_padding_mask)
     print(x1.token_logits.shape)
-    # print(x1.codebook_logits.shape)
+    print(x1.codebook_logits.shape)

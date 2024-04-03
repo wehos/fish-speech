@@ -1,7 +1,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import click
 import numpy as np
@@ -25,7 +25,7 @@ if hasattr(torch._inductor.config, "fx_graph_cache"):
     torch._inductor.config.fx_graph_cache = True
 
 
-from fish_speech.models.text2semantic.llama import Transformer
+from fish_speech.models.text2semantic.llama import DualARTransformer, NaiveTransformer
 from fish_speech.text import g2p
 from fish_speech.text.symbols import pad as pad_symbol
 from fish_speech.text.symbols import pu_symbols
@@ -89,72 +89,84 @@ def sample(
     return idx_next, probs
 
 
-def decode_one_token(
-    model: Transformer,
+def decode_one_token_ar(
+    model: DualARTransformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
     previous_tokens: torch.Tensor = None,
     **sampling_kwargs,
 ) -> torch.Tensor:
-    assert input_pos.shape[-1] == 1
-
-    logits = model.forward_generate(x, input_pos)
+    x = model.forward_generate(x, input_pos)
     codebooks = [
         sample(
-            logits.token_logits,
+            x.logits,
+            previous_tokens=None,  # Disable repetition penalty for the token codebook
+            **sampling_kwargs,
+        )[0]
+    ]
+    x = x.hidden_states
+
+    # Cleanup the cache
+    for layer in model.fast_layers:
+        layer.attention.kv_cache.k_cache.fill_(0)
+        layer.attention.kv_cache.v_cache.fill_(0)
+
+    for codebook_idx in range(model.config.num_codebooks):
+        input_pos = torch.tensor([codebook_idx], device=x.device, dtype=torch.long)
+        logits = model.forward_generate_fast(x, input_pos)
+        a = sample(
+            logits,
+            previous_tokens=(
+                previous_tokens[codebook_idx + 1]
+                if previous_tokens is not None
+                else None
+            ),
+            **sampling_kwargs,
+        )[0]
+        x = model.fast_embeddings(a)
+        codebooks.append(a)
+
+    return torch.stack(codebooks, dim=0)
+
+
+def decode_one_token_naive(
+    model: NaiveTransformer,
+    x: torch.Tensor,
+    input_pos: torch.Tensor,
+    previous_tokens: torch.Tensor = None,
+    **sampling_kwargs,
+) -> torch.Tensor:
+    x = model.forward_generate(x, input_pos)
+
+    codebooks = [
+        sample(
+            x.token_logits,
             previous_tokens=None,  # Disable repetition penalty for the token codebook
             **sampling_kwargs,
         )[0]
     ]
 
-    # Disable <s> and </s> tokens for codebooks
-    if model.config.num_codebooks != 0:
-        for i in range(model.config.num_codebooks):
-            codebooks.append(
-                sample(
-                    logits.codebook_logits[:, :, i],
-                    previous_tokens=previous_tokens[i + 1]
-                    if previous_tokens is not None
-                    else None,
-                    **sampling_kwargs,
-                )[0]
-            )
-
-    return torch.stack(codebooks, dim=0)
-
-
-def prefill(
-    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs
-) -> torch.Tensor:
-    # input_pos: [B, S]
-    logits = model.forward_generate(x, input_pos)
-    codebooks = [
-        sample(
-            logits.token_logits,
-            previous_tokens=None,
-            **sampling_kwargs,
-        )[0]
-    ]
-
-    if model.config.num_codebooks != 0:
-        for i in range(model.config.num_codebooks):
-            codebooks.append(
-                sample(
-                    logits.codebook_logits[:, :, i],
-                    previous_tokens=None,
-                    **sampling_kwargs,
-                )[0]
-            )
+    for i in range(model.config.num_codebooks):
+        codebooks.append(
+            sample(
+                x.codebook_logits[:, :, i],
+                previous_tokens=previous_tokens[i + 1]
+                if previous_tokens is not None
+                else None,
+                **sampling_kwargs,
+            )[0]
+        )
 
     return torch.stack(codebooks, dim=0)
 
 
 def decode_n_tokens(
-    model: Transformer,
+    model: NaiveTransformer,
     cur_token: torch.Tensor,
     input_pos: torch.Tensor,
     num_new_tokens: int,
     eos_token_id: int = 2,
+    decode_one_token=decode_one_token_naive,
     **sampling_kwargs,
 ):
     previous_tokens = torch.zeros(
@@ -196,12 +208,14 @@ def decode_n_tokens(
 
 
 @torch.no_grad()
+@torch.inference_mode()
 def generate(
     *,
-    model: Transformer,
+    model: NaiveTransformer,
     prompt: torch.Tensor,
     max_new_tokens: int,
     eos_token_id: int = 2,
+    decode_one_token=decode_one_token_naive,
     precision: torch.dtype = torch.bfloat16,
     **sampling_kwargs,
 ) -> torch.Tensor:
@@ -233,7 +247,7 @@ def generate(
     seq = empty
     input_pos = torch.arange(0, T, device=device)
 
-    next_token = prefill(
+    next_token = decode_one_token(
         model, prompt.view(1, codebook_dim, -1), input_pos, **sampling_kwargs
     )
     seq[:, T : T + 1] = next_token
@@ -245,6 +259,7 @@ def generate(
         input_pos,
         max_new_tokens - 1,
         eos_token_id=eos_token_id,
+        decode_one_token=decode_one_token,
         **sampling_kwargs,
     )
     # x = torch.cat(generated_tokens, dim=1)
@@ -280,20 +295,6 @@ def encode_tokens(
         string = f"[SPK: {speaker}] {string}"
 
     string = f"[INST] {string} [/INST]"
-
-    # Handle English less frequent words
-    # TODO: update tokenizer to handle this
-    # sub_strings = string.split(" ")
-    # new_tokens = []
-    # for i, string in enumerate(sub_strings):
-    #     tokens = tokenizer.encode(
-    #         string,
-    #         add_special_tokens=i == 0 and bos,
-    #         max_length=10**6,
-    #         truncation=False,
-    #     )
-    #     new_tokens.extend(tokens)
-
     new_tokens = tokenizer.encode(
         string,
         add_special_tokens=bos,
@@ -326,8 +327,12 @@ def encode_tokens(
         data = data[:num_codebooks]
 
     # Since 1.0, we use <s:xxx> to replace <semantic>
+    s0_token_id = tokenizer.convert_tokens_to_ids("<s:0>")
     main_token_ids = torch.tensor(
-        [[tokenizer.pad_token_id] * data.size(1)], dtype=torch.int, device=device
+        # TODO: replace this
+        [[s0_token_id] * data.size(1)],
+        dtype=torch.int,
+        device=device,
     )
 
     data = torch.cat((main_token_ids, data), dim=0)
@@ -336,12 +341,13 @@ def encode_tokens(
     return prompt
 
 
-def load_model(config_name, checkpoint_path, device, precision):
-    with initialize(version_base="1.3", config_path="../../fish_speech/configs"):
-        cfg = compose(config_name=config_name)
+def load_model(config_name, checkpoint_path, device, precision, max_length):
+    with initialize(version_base="1.3", config_path="../../fish_speech/configs/model"):
+        cfg = compose(
+            config_name=config_name, overrides=[f"config.max_seq_len={max_length}"]
+        )
 
-    with torch.device("meta"):
-        model: Transformer = instantiate(cfg.model).model
+    model: Union[NaiveTransformer, DualARTransformer] = instantiate(cfg)
 
     if "int8" in str(checkpoint_path):
         logger.info("Using int8 weight-only quantization!")
@@ -407,15 +413,15 @@ def split_text(text, min_length):
 @click.option("--num-samples", type=int, default=1)
 @click.option("--max-new-tokens", type=int, default=0)
 @click.option("--top-k", type=int, default=None)
-@click.option("--top-p", type=float, default=0.5)
-@click.option("--repetition-penalty", type=float, default=1.5)
+@click.option("--top-p", type=float, default=0.9)
+@click.option("--repetition-penalty", type=float, default=1.2)
 @click.option("--temperature", type=float, default=0.7)
 @click.option(
     "--checkpoint-path",
     type=click.Path(path_type=Path, exists=True),
     default="results/text2semantic_400m_finetune/step_000002000.pth",
 )
-@click.option("--config-name", type=str, default="text2semantic_finetune")
+@click.option("--config-name", type=str, default="dual_ar_8_codebook_small")
 @click.option("--tokenizer", type=str, default="fishaudio/speech-lm-v1")
 @click.option("--compile/--no-compile", default=False)
 @click.option("--use-g2p/--no-g2p", default=True)
@@ -424,6 +430,8 @@ def split_text(text, min_length):
 @click.option("--order", type=str, default="zh,jp,en")
 @click.option("--half/--no-half", default=False)
 @click.option("--iterative-prompt/--no-iterative-prompt", default=False)
+@click.option("--max-length", type=int, default=2048)
+@click.option("--chunk-length", type=int, default=30)
 def main(
     text: str,
     prompt_text: Optional[str],
@@ -444,6 +452,8 @@ def main(
     order: str,
     half: bool,
     iterative_prompt: bool,
+    max_length: int,
+    chunk_length: int,
 ) -> None:
     device = "cuda"
 
@@ -451,7 +461,7 @@ def main(
 
     logger.info("Loading model ...")
     t0 = time.time()
-    model, cfg = load_model(config_name, checkpoint_path, device, precision)
+    model, cfg = load_model(config_name, checkpoint_path, device, precision, max_length)
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     torch.cuda.synchronize()
@@ -466,7 +476,7 @@ def main(
 
     use_prompt = prompt_text is not None and prompt_tokens is not None
     encoded = []
-    texts = split_text(text, 20) if iterative_prompt else [text]
+    texts = split_text(text, chunk_length) if iterative_prompt else [text]
     for idx, text in enumerate(texts):
         encoded.append(
             encode_tokens(
@@ -480,9 +490,9 @@ def main(
                 num_codebooks=model.config.num_codebooks,
             )
         )
-        print(f"Encoded text: {text}")
+        logger.info(f"Encoded text: {text}")
 
-    if use_prompt and iterative_prompt:
+    if use_prompt:
         encoded_prompt = encode_tokens(
             tokenizer,
             prompt_text,
@@ -497,14 +507,18 @@ def main(
 
         encoded[0] = torch.cat((encoded_prompt, encoded[0]), dim=1)
 
-    # prompt_length = encoded.size(1)
-    # logger.info(f"Encoded prompt shape: {encoded.shape}")
-
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
 
+    if isinstance(model, DualARTransformer):
+        decode_one_token = decode_one_token_ar
+        logger.info("Using DualARTransformer")
+    else:
+        decode_one_token = decode_one_token_naive
+        logger.info("Using NaiveTransformer")
+
     if compile:
-        global decode_one_token
+        logger.info("Compiling function...")
         decode_one_token = torch.compile(
             decode_one_token, mode="reduce-overhead", fullgraph=True
         )
@@ -518,7 +532,26 @@ def main(
         while seg_idx < len(encoded):
             seg = encoded[seg_idx]
             global_encoded.append(seg)
-            cat_encoded = torch.cat(global_encoded, dim=1)
+
+            lengths = reversed([seg.size(1) for seg in global_encoded])
+
+            # Pick last 2000 tokens
+            count = 0
+            for i, length in enumerate(lengths):
+                count += length
+                if count + length > max_length - 1024:
+                    break
+
+            if i != 0 and i % 2 == 0:
+                i -= 1
+
+            # Rotate the list
+            if i < len(global_encoded) - 2:
+                partial_encoded = global_encoded[-i:]
+            else:
+                partial_encoded = global_encoded
+
+            cat_encoded = torch.cat(partial_encoded, dim=1)
             prompt_length = cat_encoded.size(1)
 
             t0 = time.perf_counter()
@@ -527,6 +560,7 @@ def main(
                 prompt=cat_encoded,
                 max_new_tokens=max_new_tokens,
                 eos_token_id=tokenizer.eos_token_id,
+                decode_one_token=decode_one_token,
                 precision=precision,
                 temperature=temperature,
                 top_k=top_k,
@@ -534,7 +568,7 @@ def main(
                 repetition_penalty=repetition_penalty,
             )
 
-            if idx == 0 and compile:
+            if idx == 0 and seg_idx == 0 and compile:
                 logger.info(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
 
             torch.cuda.synchronize()
@@ -555,15 +589,6 @@ def main(
             # Put the generated tokens
             codes = y[1:, prompt_length:-1].clone()
 
-            if getattr(cfg, "use_delay_pattern", True):
-                new_codes = []
-                for j, code in enumerate(codes):
-                    new_codes.append(
-                        code[j : codes.shape[1] - (model.config.num_codebooks - j - 1)]
-                    )
-
-                codes = torch.stack(new_codes, dim=0)
-
             codes = codes - 2
             if not (codes >= 0).all():
                 global_encoded.pop()
@@ -576,7 +601,6 @@ def main(
 
         codes = torch.cat(all_codes, dim=1)
         assert (codes >= 0).all(), f"Negative code found: {codes}"
-        print(codes)
 
         np.save(f"codes_{idx}.npy", codes.cpu().numpy())
         logger.info(f"Saved codes to codes_{idx}.npy")
