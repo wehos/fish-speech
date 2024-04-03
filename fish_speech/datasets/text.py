@@ -371,17 +371,20 @@ class AutoAugTextDataset(IterableDataset):
                         return max(counts.values())
                     else:
                         return 0
+                skipped=False
                 while count_substrings(samples[-1].text)>7 and len(samples)>0:
-                    print(samples.pop().text)
+                    samples.pop()
+                    skipped=True
+                if skipped:
                     if len(all_tokens) > 0:
                         if random.random() > (1-0.15*(len(all_tokens))):
                             break
                         else:
                             all_tokens, all_labels = [], []
-                if len(samples)==0:
-                    if len(all_tokens) > 0:
-                        break
-                    return None
+                            if len(samples)==0:
+                                return None
+                    elif len(samples)==0:
+                        return None
                 sentence = samples.pop()
 
             text, length = self.tokenize_sentence(
