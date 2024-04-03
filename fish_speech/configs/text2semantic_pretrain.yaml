@@ -14,10 +14,6 @@ trainer:
     stage: 2 
     zero_optimization: true
     pin_memory: true
-
-# Lightning Trainer
-trainer:
-  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
   max_steps: 100_000
@@ -52,8 +48,8 @@ data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
-  num_workers: 6
-  batch_size: 16
+  num_workers: 8
+  batch_size: 24
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
