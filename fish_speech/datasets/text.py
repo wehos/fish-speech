@@ -551,7 +551,7 @@ class AutoAugTextDataset(IterableDataset):
             semantic_length = sum([len(i[0].values) for i in semantics])
             prompt_length = 0
             codes = [
-                [CODEBOOK_PAD_TOKEN_ID] * bos_bias)
+                [CODEBOOK_PAD_TOKEN_ID] * bos_bias
                 for i in range(num_codebooks)
             ]
             for segment in semantics:

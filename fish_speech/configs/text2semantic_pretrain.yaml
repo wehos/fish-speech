@@ -1,5 +1,5 @@
 defaults:
-  - text2semantic_pretrain_small
+  - base
   - _self_
 
 project: text2semantic_pretrain_multitask_vicuna7b
@@ -8,7 +8,7 @@ ckpt_path: checkpoints/consolidated.00.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
     stage: 2 
@@ -49,7 +49,7 @@ data:
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 8
-  batch_size: 24
+  batch_size: 32
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
@@ -75,7 +75,7 @@ model:
     _target_: torch.optim.AdamW
     _partial_: true
     lr: 3e-4
-    weight_decay: 0.01
+    weight_decay: 0.001
     betas: [0.9, 0.95]
     eps: 1e-5
 
