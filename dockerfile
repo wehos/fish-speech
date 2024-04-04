@@ -6,22 +6,13 @@ RUN apt-get update && apt-get install -y git curl build-essential ffmpeg libsm6 
     zlib1g-dev aria2 zsh openssh-server sudo python3.10-venv protobuf-compiler && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install zsh
-RUN sh -c "$(curl https://raw.githubusercontent.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
-
-# Set zsh as default shell
-RUN chsh -s /usr/bin/zsh
-ENV SHELL=/usr/bin/zsh
-
 # Setup torchaudio
-RUN git clone https://github.com/pytorch/audio --recursive --depth 1 && \
-    cd audio && pip install -v --no-use-pep517 . && \
-    cd .. && rm -rf audio && python -c "import torchaudio; print(torchaudio.__version__)"
+RUN pip3 install torch torchvision torchaudio
 
 # Setup flash-attn
 RUN pip3 install --upgrade pip && \
     pip3 install ninja packaging && \
-    FLASH_ATTENTION_FORCE_BUILD=TRUE pip3 install git+https://github.com/Dao-AILab/flash-attention.git
+    pip3 install flash-attn --no-build-isolation
 RUN pip3 install -U deepspeed
 
 # Test flash-attn
