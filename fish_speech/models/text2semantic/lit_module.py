@@ -399,7 +399,7 @@ class TextToSemantic(L.LightningModule):
                 self.alpha_scheduler = self.lora_config.lora_alpha
                 self.set_lora_alpha(self.alpha_scheduler)
             self.lora_steps += 1
-            if self.lora_steps > 2500 and self.lora_steps % 1000 == 0:
+            if self.lora_steps % 2000 == 0:
                 self.merge_and_reset_lora()
         return self._step(batch, batch_idx, "train")
 

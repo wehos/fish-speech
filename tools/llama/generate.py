@@ -100,6 +100,7 @@ def decode_one_token(
 
     logits = model.forward_generate(x, input_pos)
     codebooks = [
+#         torch.tensor([0]).long().to(x.device)
         sample(
             logits.token_logits,
             previous_tokens=None,  # Disable repetition penalty for the token codebook
@@ -111,13 +112,13 @@ def decode_one_token(
     if model.config.num_codebooks != 0:
         for i in range(model.config.num_codebooks):
             codebooks.append(
-                sample(
+                torch.zeros_like(sample(
                     logits.codebook_logits[:, :, i],
                     previous_tokens=previous_tokens[i + 1]
                     if previous_tokens is not None
                     else None,
                     **sampling_kwargs,
-                )[0]
+                )[0])
             )
 
     return torch.stack(codebooks, dim=0)
@@ -129,6 +130,7 @@ def prefill(
     # input_pos: [B, S]
     logits = model.forward_generate(x, input_pos)
     codebooks = [
+#         torch.tensor([1]).long().to(x.device)
         sample(
             logits.token_logits,
             previous_tokens=None,
@@ -139,11 +141,11 @@ def prefill(
     if model.config.num_codebooks != 0:
         for i in range(model.config.num_codebooks):
             codebooks.append(
-                sample(
+                torch.zeros_like(sample(
                     logits.codebook_logits[:, :, i],
                     previous_tokens=None,
                     **sampling_kwargs,
-                )[0]
+                )[0])
             )
 
     return torch.stack(codebooks, dim=0)
@@ -274,12 +276,13 @@ def encode_tokens(
         ]
         string = " ".join(prompt)
     else:
-        string = clean_text(string)
+        pass
+#         string = clean_text(string)
 
-    if speaker is not None:
-        string = f"[SPK: {speaker}] {string}"
+#     if speaker is not None:
+#         string = f"[SPK: {speaker}] {string}"
 
-    string = f"[INST] {string} [/INST]"
+#     string = f"[INST] {string} [/INST]"
 
     # Handle English less frequent words
     # TODO: update tokenizer to handle this
@@ -398,32 +401,32 @@ def split_text(text, min_length):
     return segments
 
 
-@click.command()
-@click.option("--text", type=str, default="你说的对, 但是原神是一款由米哈游自主研发的开放世界手游.")
-@click.option("--prompt-text", type=str, default=None)
-@click.option(
-    "--prompt-tokens", type=click.Path(path_type=Path, exists=True), default=None
-)
-@click.option("--num-samples", type=int, default=1)
-@click.option("--max-new-tokens", type=int, default=0)
-@click.option("--top-k", type=int, default=None)
-@click.option("--top-p", type=float, default=0.5)
-@click.option("--repetition-penalty", type=float, default=1.5)
-@click.option("--temperature", type=float, default=0.7)
-@click.option(
-    "--checkpoint-path",
-    type=click.Path(path_type=Path, exists=True),
-    default="results/text2semantic_400m_finetune/step_000002000.pth",
-)
-@click.option("--config-name", type=str, default="text2semantic_finetune")
-@click.option("--tokenizer", type=str, default="fishaudio/speech-lm-v1")
-@click.option("--compile/--no-compile", default=False)
-@click.option("--use-g2p/--no-g2p", default=True)
-@click.option("--seed", type=int, default=42)
-@click.option("--speaker", type=str, default=None)
-@click.option("--order", type=str, default="zh,jp,en")
-@click.option("--half/--no-half", default=False)
-@click.option("--iterative-prompt/--no-iterative-prompt", default=False)
+# @click.command()
+# @click.option("--text", type=str, default="你说的对, 但是原神是一款由米哈游自主研发的开放世界手游.")
+# @click.option("--prompt-text", type=str, default=None)
+# @click.option(
+#     "--prompt-tokens", type=click.Path(path_type=Path, exists=True), default=None
+# )
+# @click.option("--num-samples", type=int, default=1)
+# @click.option("--max-new-tokens", type=int, default=0)
+# @click.option("--top-k", type=int, default=None)
+# @click.option("--top-p", type=float, default=0.5)
+# @click.option("--repetition-penalty", type=float, default=1.5)
+# @click.option("--temperature", type=float, default=0.7)
+# @click.option(
+#     "--checkpoint-path",
+#     type=click.Path(path_type=Path, exists=True),
+#     default="results/text2semantic_400m_finetune/step_000002000.pth",
+# )
+# @click.option("--config-name", type=str, default="text2semantic_finetune")
+# @click.option("--tokenizer", type=str, default="fishaudio/speech-lm-v1")
+# @click.option("--compile/--no-compile", default=False)
+# @click.option("--use-g2p/--no-g2p", default=True)
+# @click.option("--seed", type=int, default=42)
+# @click.option("--speaker", type=str, default=None)
+# @click.option("--order", type=str, default="zh,jp,en")
+# @click.option("--half/--no-half", default=False)
+# @click.option("--iterative-prompt/--no-iterative-prompt", default=False)
 def main(
     text: str,
     prompt_text: Optional[str],
@@ -566,9 +569,11 @@ def main(
 
             codes = codes - 2
             if not (codes >= 0).all():
-                global_encoded.pop()
-                logger.warning(f"Negative code found: {codes}, retrying ...")
-                continue
+                print((codes < 0).any(1).sum().item(), 'codes has been removed due to negative.')
+                codes = codes[:, :, (codes >= 0).any(1)[0]]
+#                 global_encoded.pop()
+#                 logger.warning(f"Negative code found: {codes}, retrying ...")
+#                 continue
 
             global_encoded.append(y[:, prompt_length:-1].clone())
             all_codes.append(codes)
@@ -577,9 +582,13 @@ def main(
         codes = torch.cat(all_codes, dim=1)
         assert (codes >= 0).all(), f"Negative code found: {codes}"
         print(codes)
+        print(global_encoded[-1][0])
+        
+        return codes, tokenizer.decode(global_encoded[-1][0])
 
-        np.save(f"codes_{idx}.npy", codes.cpu().numpy())
-        logger.info(f"Saved codes to codes_{idx}.npy")
+#         np.save(f"codes_{idx}.npy", codes.cpu().numpy())
+#         logger.info(f"Saved codes to codes_{idx}.npy")
+        
 
 
 if __name__ == "__main__":
