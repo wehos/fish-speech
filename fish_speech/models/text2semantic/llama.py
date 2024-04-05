@@ -293,10 +293,16 @@ class DualARTransformer(BaseTransformer):
         self.fast_layers = nn.ModuleList(
             TransformerBlock(config, use_sdpa=False) for _ in range(config.n_fast_layer)
         )
-        self.fast_norm = RMSNorm(config.dim, eps=config.norm_eps)
-        self.fast_output = nn.Linear(
+        #self.fast_norm = RMSNorm(config.dim, eps=config.norm_eps)
+        #self.fast_output = nn.Linear(
+        #    config.dim,
+        #    config.codebook_size,
+        #    bias=False,
+        #)
+        self.codebook_norm = RMSNorm(config.dim, eps=config.norm_eps)
+        self.codebook_output = nn.Linear(
             config.dim,
-            config.codebook_size,
+            config.codebook_size * config.num_codebooks,
             bias=False,
         )
 
@@ -351,10 +357,16 @@ class DualARTransformer(BaseTransformer):
                 x = checkpoint(layer, x, fast_freqs_cis, fast_mask, use_reentrant=True)
             else:
                 x = layer(x, fast_freqs_cis, fast_mask)
-
+        
+        codebook_logits = self.codebook_output(self.codebook_norm(x))
+        codebook_logits = rearrange(
+            codebook_logits, "x n (n2 d) ->x (n n2) d", n2=self.config.num_codebooks,
+            )[:, torch.eye(self.config.num_codebooks).bool().reshape(-1)]
+        
         # unflatten the batch and num_codebooks
-        fast_out = self.fast_norm(x)
-        codebook_logits = self.fast_output(fast_out)
+        #fast_out = self.fast_norm(x)
+        #codebook_logits = self.fast_output(fast_out)
+        
 
         # Re-pad the codebook_logits
         buffer = torch.zeros(
@@ -396,8 +408,12 @@ class DualARTransformer(BaseTransformer):
             x = layer(x, fast_freqs_cis, fast_mask, input_pos=input_pos)
 
         # unflatten the batch and num_codebooks
-        fast_out = self.fast_norm(x)  # only take the last token
-        codebook_logits = self.fast_output(fast_out)
+        #fast_out = self.fast_norm(x)  # only take the last token
+        #codebook_logits = self.fast_output(fast_out)
+        codebook_logits = self.codebook_output(self.codebook_norm(x))
+        codebook_logits = rearrange(
+            codebook_logits, "x n (n2 d) ->x (n n2) d", n2=self.config.num_codebooks,
+            )[:, torch.eye(self.config.num_codebooks).bool().reshape(-1)]
 
         return codebook_logits
 

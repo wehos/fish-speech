@@ -86,6 +86,10 @@ class TextToSemantic(L.LightningModule):
             p.requires_grad = True
         for n, p in self.model.added_output.named_parameters():
             p.requires_grad = True
+        for n, p in self.model.codebook_norm.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.codebook_output.named_parameters():
+            p.requires_grad = True
         self.alpha_scheduler = 0
         self.lora_steps = 0
    
@@ -245,9 +249,25 @@ class TextToSemantic(L.LightningModule):
             codebook_logits.reshape(-1, codebook_logits.size(-1)),
             codebook_labels.reshape(-1),
             ignore_index=-100,
-        )
+        ) + F.cross_entropy(
+            codebook_logits[:, :, 0].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 0].reshape(-1),
+            ignore_index=-100,
+        ) * 2 + F.cross_entropy(
+            codebook_logits[:, :, 1].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 1].reshape(-1),
+            ignore_index=-100,
+        ) * 1.5 + F.cross_entropy(
+            codebook_logits[:, :, 2].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 2].reshape(-1),
+            ignore_index=-100,
+        ) + F.cross_entropy(
+            codebook_logits[:, :, 3].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 3].reshape(-1),
+            ignore_index=-100,
+        ) * 0.5
 
-        loss = base_loss + semantic_loss
+        loss = semantic_loss / 6 #base_loss + semantic_loss
 
         # If we use dpo
         if self.use_dpo:

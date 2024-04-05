@@ -358,38 +358,38 @@ class AutoAugTextDataset(IterableDataset):
                 # Repeat the same sentence
                 sentence = samples[-1]
             else:
-                def count_substrings(s, length=4):
-                    counts = {}
-                    for i in range(len(s) - length + 1):
-                        substring = s[i:i+length]
-                        if substring in counts:
-                            counts[substring] += 1
-                        else:
-                            counts[substring] = 1
-                    if len(counts)>0:
-                        return max(counts.values())
-                    else:
-                        return 0
-                skipped=False
-                while count_substrings(samples[-1].text)>7 and len(samples)>0:
-                    samples.pop()
-                    skipped=True
-                if skipped:
-                    if len(all_tokens) > 0:
-                        if random.random() > (1-0.15*(len(all_tokens))):
-                            break
-                        else:
-                            all_tokens, all_labels = [], []
-                            if len(samples)==0:
-                                return None
-                    elif len(samples)==0:
-                        return None
+                #def count_substrings(s, length=4):
+                #    counts = {}
+                #    for i in range(len(s) - length + 1):
+                #        substring = s[i:i+length]
+                #        if substring in counts:
+                #            counts[substring] += 1
+                #        else:
+                #            counts[substring] = 1
+                #    if len(counts)>0:
+                #        return max(counts.values())
+                #    else:
+                #        return 0
+                #skipped=False
+                #while count_substrings(samples[-1].text)>7 and len(samples)>0:
+                #    samples.pop()
+                #    skipped=True
+                #if skipped:
+                #    if len(all_tokens) > 0:
+                #        if random.random() > (1-0.15*(len(all_tokens))):
+                #            break
+                #        else:
+                #            all_tokens, all_labels = [], []
+                #            if len(samples)==0:
+                #                return None
+                #    elif len(samples)==0:
+                #        return None
                 sentence = samples.pop()
 
             text, length = self.tokenize_sentence(
                 sentence.text, sentence.phones, mode=mode
             )
-            remaining_tokens -= length + len(sentence.semantics[0].values)
+            remaining_tokens -=  len(sentence.semantics[0].values)
             
             assert not use_interactive, 'My new multi-task implementation does not support interactive mode. Will leave it for sft later'
             if use_interactive is False:
@@ -520,6 +520,7 @@ class AutoAugTextDataset(IterableDataset):
             task = random.choice(['asr', 'voice'])
         else:
             task = random.choice(['tts', 'voice'])
+        task = 'voice'
 
         if task == 'text':
             encoded = self.tokenizer.encode(
@@ -545,7 +546,7 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, :-1] = -100
+            labels[1:, :] = -100
 
         elif task == 'voice':
             semantic_length = sum([len(i[0].values) for i in semantics])
@@ -571,7 +572,7 @@ class AutoAugTextDataset(IterableDataset):
             tokens = [tokens] + codes
             tokens = torch.tensor(tokens, dtype=torch.long)
             labels = tokens.clone()
-            labels[0, :-1] = -100
+            labels[0, :] = -100
             
         elif task == 'tts':
             final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
@@ -618,7 +619,7 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[0, :-1] = -100
+            labels[0, :] = -100
             labels[1:, :prompt_length] = -100
             
         elif task == 'asr':
@@ -670,7 +671,7 @@ class AutoAugTextDataset(IterableDataset):
     
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
-            labels[1:, :-1] = -100
+            labels[1:, :] = -100
             labels[0, :(len(prefix) + semantic_length)] = -100
             
         
@@ -680,8 +681,8 @@ class AutoAugTextDataset(IterableDataset):
         # Verify the padding is correct, and the last token is eos
         assert add_bos is False or tokens[0, 0] == self.tokenizer.bos_token_id
         # assert (tokens[1:, :prompt_length + bos_bias] == CODEBOOK_PAD_TOKEN_ID).all()
-        assert labels[0, -1] == self.tokenizer.eos_token_id
-        assert (labels[1:, -1] == CODEBOOK_EOS_TOKEN_ID).all()
+        #assert labels[0, -1] == self.tokenizer.eos_token_id
+        #assert (labels[1:, -1] == CODEBOOK_EOS_TOKEN_ID).all()
 
         return tokens, labels
 
