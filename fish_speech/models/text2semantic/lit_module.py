@@ -90,6 +90,10 @@ class TextToSemantic(L.LightningModule):
             p.requires_grad = True
         for n, p in self.model.codebook_output.named_parameters():
             p.requires_grad = True
+        for n, p in self.model.fast_layers.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.fast_embeddings.named_parameters():
+            p.requires_grad = True
         self.alpha_scheduler = 0
         self.lora_steps = 0
    
