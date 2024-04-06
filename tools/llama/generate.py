@@ -24,7 +24,7 @@ if hasattr(torch._inductor.config, "fx_graph_cache"):
     # Experimental feature to reduce compilation times, will be on by default in future
     torch._inductor.config.fx_graph_cache = True
 
-
+MODE = 'audio'
 from fish_speech.models.text2semantic.llama import DualARTransformer, NaiveTransformer
 from fish_speech.text import g2p
 from fish_speech.text.symbols import pad as pad_symbol
@@ -98,13 +98,14 @@ def decode_one_token_ar(
 ) -> torch.Tensor:
     x = model.forward_generate(x, input_pos)
     codebooks = [
-#         torch.tensor([0]).long().to(x.device)
         sample(
             x.logits,
             previous_tokens=None,  # Disable repetition penalty for the token codebook
             **sampling_kwargs,
         )[0]
     ]
+    if MODE == 'audio':
+        codebooks[0] = torch.zeros_like(codebooks[0]).long() + 32311
     x = x.hidden_states
 
     # Cleanup the cache
@@ -126,6 +127,8 @@ def decode_one_token_ar(
         )[0]
         x = model.fast_embeddings(a)
         codebooks.append(a)
+        if MODE == 'text':
+            codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
 
     return torch.stack(codebooks, dim=0)
 
@@ -140,12 +143,14 @@ def decode_one_token_naive(
     x = model.forward_generate(x, input_pos)
 
     codebooks = [
-        sample(
+        torch.zeros_like(sample(
             x.token_logits,
             previous_tokens=None,  # Disable repetition penalty for the token codebook
             **sampling_kwargs,
-        )[0]
+        )[0]).long()
     ]
+    if MODE == 'audio':
+        codebooks[0] = torch.zeros_like(codebooks[0]).long() + 32311
 
     for i in range(model.config.num_codebooks):
         codebooks.append(
@@ -157,6 +162,8 @@ def decode_one_token_naive(
                 **sampling_kwargs,
             )[0]
         )
+        if MODE == 'text':
+            codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
 
     return torch.stack(codebooks, dim=0)
 
@@ -347,7 +354,7 @@ def encode_tokens(
 def load_model(config_name, checkpoint_path, device, precision, max_length):
     with initialize(version_base="1.3", config_path="../../fish_speech/configs/model"):
         cfg = compose(
-            config_name=config_name, overrides=[f"config.max_seq_len={max_length}"]
+            config_name=config_name#, overrides=[f"config.max_seq_len={max_length}"]
         )
 
     model: Union[NaiveTransformer, DualARTransformer] = instantiate(cfg)
@@ -379,8 +386,7 @@ def load_model(config_name, checkpoint_path, device, precision, max_length):
             for k, v in checkpoint.items()
             if k.startswith("model.")
         }
-
-    model.load_state_dict(checkpoint, assign=True)
+    model.load_state_dict(checkpoint, strict=False)
 
     model = model.to(device=device, dtype=precision)
     logger.info("Restored model from checkpoint")
@@ -457,7 +463,10 @@ def main(
     iterative_prompt: bool,
     max_length: int,
     chunk_length: int,
+    mode: str,
 ) -> None:
+    global MODE
+    MODE = mode
     device = "cuda"
 
     precision = torch.half if half else torch.bfloat16
@@ -471,6 +480,7 @@ def main(
     logger.info(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+    print(tokenizer.convert_tokens_to_ids("<s:0>"))
     prompt_tokens = (
         torch.from_numpy(np.load(prompt_tokens)).to(device)
         if prompt_tokens is not None

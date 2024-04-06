@@ -233,7 +233,7 @@ class BaseTransformer(nn.Module):
 
         # We got slow_out here
         slow_out = self.norm(x)
-        token_logits = self.output(slow_out)
+        token_logits = self.combined_output(slow_out)
 
         return BaseTransformerForwardResult(
             logits=token_logits,
@@ -413,7 +413,7 @@ class DualARTransformer(BaseTransformer):
         codebook_logits = self.codebook_output(self.codebook_norm(x))
         codebook_logits = rearrange(
             codebook_logits, "x n (n2 d) ->x (n n2) d", n2=self.config.num_codebooks,
-            )[:, torch.eye(self.config.num_codebooks).bool().reshape(-1)]
+            )[:, input_pos]
 
         return codebook_logits
 

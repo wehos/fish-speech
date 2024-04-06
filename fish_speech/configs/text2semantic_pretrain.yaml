@@ -1,19 +1,18 @@
 defaults:
   - base
   - _self_
-
-project: text2semantic_pretrain_multitask_vicuna7b
+ 
+project: text2semantic_pretrain_multitask_vicuna7b_new
 max_length: 2048
 ckpt_path: checkpoints/consolidated.00.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 4
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
-    stage: 2 
-    zero_optimization: true
-    pin_memory: true
+    stage: 2
+    contiguous_gradients: false
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
   max_steps: 100_000
@@ -49,7 +48,7 @@ data:
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 8
-  batch_size: 32
+  batch_size: 4
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
@@ -57,7 +56,7 @@ model:
   _target_: fish_speech.models.text2semantic.TextToSemantic
 
   model:
-    _target_: fish_speech.models.text2semantic.llama.NaiveTransformer
+    _target_: fish_speech.models.text2semantic.llama.DualARTransformer
     config:
       _target_: fish_speech.models.text2semantic.llama.DualARModelArgs
       max_seq_len: 4048
@@ -74,11 +73,17 @@ model:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 3e-4
+    lr: 1e-4
     weight_decay: 0.001
     betas: [0.9, 0.95]
     eps: 1e-5
 
+  save_lora_only: false
+  lora_config:
+    _target_: fish_speech.models.text2semantic.lit_module.LoraConfig
+    r: 16
+    lora_alpha: 32
+  
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.LambdaLR
     _partial_: true
