@@ -1,0 +1,44 @@
+defaults:
+  - text2semantic_pretrain_small
+  - _self_
+
+project: text2semantic_pretrain_large_4_in_8_codebooks_scratch
+max_length: 2048
+
+trainer:
+  accumulate_grad_batches: 2
+  strategy:
+    _target_: lightning.pytorch.strategies.DeepSpeedStrategy
+    stage: 2 
+    zero_optimization: true
+    pin_memory: true
+
+
+
+data:
+  _target_: fish_speech.datasets.text.TextDataModule
+  train_dataset: ${train_dataset}
+  val_dataset: ${val_dataset}
+  num_workers: 4
+  batch_size: 8
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+  
+# Model Configuration
+model:
+  model:
+    config:
+      max_seq_len: 4048
+      n_layer: 32
+      n_head: 32
+      dim: 4096
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
+    lr_lambda:
+      _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 2000
+      num_training_steps: ${trainer.max_steps}
+      final_lr_ratio: 0.1

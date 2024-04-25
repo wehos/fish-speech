@@ -1,13 +1,18 @@
 defaults:
-  - model@model.model: dual_ar_2_codebook_small
+  - model@model.model: dual_ar_2_codebook_7b
   - _self_
-
-project: text2semantic_pretrain_dual_ar_debug
+ 
+project: text2semantic_pretrain_multitask_vicuna7b_new
 max_length: 2048
+ckpt_path: checkpoints/consolidated.00.pth
+resume_weights_only: true
 
-# Lightning Trainer
 trainer:
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 4
+  strategy:
+    _target_: lightning.pytorch.strategies.DeepSpeedStrategy
+    stage: 2
+    contiguous_gradients: false
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
   max_steps: 100_000
@@ -28,7 +33,7 @@ train_dataset:
   max_length: ${max_length}
   num_codebooks: ${model.model.config.num_codebooks}
   use_speaker: false
-  interactive_prob: 0.5
+  interactive_prob: 0.
 
 val_dataset:
   _target_: fish_speech.datasets.text.AutoAugTextDataset
@@ -38,36 +43,56 @@ val_dataset:
   max_length: ${max_length}
   num_codebooks: ${model.model.config.num_codebooks}
   use_speaker: false
-  interactive_prob: 0.5
+  phones_prob: 0.
+  interactive_prob: 0.
 
 data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
-  num_workers: 4
-  batch_size: 8
+  num_workers: 8
+  batch_size: 4
   tokenizer: ${tokenizer}
   max_length: ${max_length}
-
-# Model Configuration
+  
 model:
   _target_: fish_speech.models.text2semantic.TextToSemantic
-  model: {}
+
+  model:
+    _target_: fish_speech.models.text2semantic.llama.DualARTransformer
+    config:
+      _target_: fish_speech.models.text2semantic.llama.DualARModelArgs
+      max_seq_len: 4048
+      vocab_size: 36408
+      n_layer: 32
+      n_fast_layer: 4
+      n_head: 32
+      dim: 4096
+      rope_base: 10000
+      norm_eps: 1e-5
+      num_codebooks: 8  # input/output codebook size
+      codebook_size: 264 # codebook size 256 + 2 special tokens
 
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 3e-4
+    lr: 1e-4
     weight_decay: 0.01
     betas: [0.9, 0.95]
     eps: 1e-5
 
+  save_lora_only: false
+  lora_config:
+    _target_: fish_speech.models.text2semantic.lit_module.LoraConfig
+    r: 16
+    lora_alpha: 32
+  
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.LambdaLR
     _partial_: true
     lr_lambda:
       _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
-      num_warmup_steps: 2000
+      num_warmup_steps: 1000
       num_training_steps: ${trainer.max_steps}
       final_lr_ratio: 0.1

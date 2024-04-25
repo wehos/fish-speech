@@ -8,10 +8,11 @@ import torch.nn.functional as F
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 
 import fish_speech.utils as utils
+import torch.nn as nn
+import math
 from fish_speech.models.text2semantic.llama import NaiveTransformer
 
 log = utils.RankedLogger(__name__, rank_zero_only=True)
-
 
 @dataclass
 class LoraConfig:
@@ -40,16 +41,16 @@ class TextToSemantic(L.LightningModule):
         self.save_lora_only = save_lora_only
         self.use_dpo = use_dpo  # We don't support reference model yet
         self.dpo_beta = dpo_beta
-
+        
         if self.lora_config is not None:
             self.setup_lora()
 
     def setup_lora(self):
         # Replace the embedding layer with a LoRA layer
-        self.model.embeddings = lora.Embedding(
-            num_embeddings=self.model.embeddings.num_embeddings,
-            embedding_dim=self.model.embeddings.embedding_dim,
-            padding_idx=self.model.embeddings.padding_idx,
+        self.model.tok_embeddings = lora.Embedding(
+            num_embeddings=self.model.tok_embeddings.num_embeddings,
+            embedding_dim=self.model.tok_embeddings.embedding_dim,
+            padding_idx=self.model.tok_embeddings.padding_idx,
             r=self.lora_config.r,
             lora_alpha=self.lora_config.lora_alpha,
         )
@@ -95,7 +96,70 @@ class TextToSemantic(L.LightningModule):
 
         # Mark only the LoRA layers as trainable
         lora.mark_only_lora_as_trainable(self.model, bias="lora_only")
+        for n, p in self.model.added_embeddings.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.added_output.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.codebook_norm.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.codebook_output.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.fast_layers.named_parameters():
+            p.requires_grad = True
+        for n, p in self.model.fast_embeddings.named_parameters():
+            p.requires_grad = True
+        self.alpha_scheduler = 0
+        self.lora_steps = 0
+   
+    def count_lora_linears(self):
+        if not getattr(self, 'lora_linears', None):
+            linears = [(self.model, "output")]
+            for layer in self.model.layers:
+                linears.extend([(layer.attention, "wqkv"), (layer.attention, "wo")])
+                linears.extend(
+                    [
+                        (layer.feed_forward, "w1"),
+                        (layer.feed_forward, "w2"),
+                        (layer.feed_forward, "w3"),
+                    ]
+                )
+            lora_linears = []
+            for module, layer in linears:
+                linear_layer = getattr(module, layer)
+                if isinstance(linear_layer, lora.Linear):
+                    lora_linears.append(linear_layer)
+            self.lora_linears = lora_linears
 
+    def merge_and_reset_lora(self):
+        if isinstance(self.model.tok_embeddings, lora.Embedding):
+            with torch.no_grad():
+                self.model.tok_embeddings.weight.data += (self.model.tok_embeddings.lora_B @ self.model.tok_embeddings.lora_A).transpose(0, 1) * self.model.tok_embeddings.scaling
+            nn.init.zeros_(self.model.tok_embeddings.lora_A)
+            nn.init.normal_(self.model.tok_embeddings.lora_B)
+
+        if not getattr(self, 'lora_linears', None):
+            self.count_lora_linears()
+
+        for linear_layer in self.lora_linears:
+            def T(w):
+                return w.transpose(0, 1) if linear_layer.fan_in_fan_out else w
+            with torch.no_grad():
+                linear_layer.weight.data += T(linear_layer.lora_B @ linear_layer.lora_A) * linear_layer.scaling
+            nn.init.kaiming_uniform_(linear_layer.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(linear_layer.lora_B)
+
+    def set_lora_alpha(self, alpha):
+        if isinstance(self.model.tok_embeddings, lora.Embedding):
+            self.model.tok_embeddings.lora_alpha = alpha
+            self.model.tok_embeddings.scaling = self.model.tok_embeddings.lora_alpha / self.model.tok_embeddings.r
+        
+        if not getattr(self, 'lora_linears', None):
+            self.count_lora_linears()
+
+        for linear_layer in self.lora_linears:
+            linear_layer.lora_alpha = alpha
+            linear_layer.scaling = linear_layer.lora_alpha / linear_layer.r
+    
     def forward(self, x):
         return self.model(x)
 
@@ -113,7 +177,7 @@ class TextToSemantic(L.LightningModule):
         # Get weight decay parameters
         weight_decay_parameters, other_parameters = [], []
         for name, param in self.named_parameters():
-            if ".bias" in name or "norm.weight" in name or ".embeddings." in name:
+            if ".bias" in name or "norm.weight" in name or "embeddings" in name:
                 other_parameters.append(param)
             else:
                 weight_decay_parameters.append(param)
@@ -205,9 +269,25 @@ class TextToSemantic(L.LightningModule):
             codebook_logits.reshape(-1, codebook_logits.size(-1)),
             codebook_labels.reshape(-1),
             ignore_index=-100,
-        )
+        ) + F.cross_entropy(
+            codebook_logits[:, :, 0].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 0].reshape(-1),
+            ignore_index=-100,
+        ) * 2 + F.cross_entropy(
+            codebook_logits[:, :, 1].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 1].reshape(-1),
+            ignore_index=-100,
+        ) * 1.5 + F.cross_entropy(
+            codebook_logits[:, :, 2].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 2].reshape(-1),
+            ignore_index=-100,
+        ) + F.cross_entropy(
+            codebook_logits[:, :, 3].reshape(-1, codebook_logits.size(-1)),
+            codebook_labels[:, :, 3].reshape(-1),
+            ignore_index=-100,
+        ) * 0.5
 
-        loss = base_loss + semantic_loss
+        loss = semantic_loss / 6 #base_loss + semantic_loss
 
         # If we use dpo
         if self.use_dpo:
@@ -358,6 +438,16 @@ class TextToSemantic(L.LightningModule):
         return accuracy
 
     def training_step(self, batch, batch_idx):
+        if self.lora_config is not None:
+            if self.alpha_scheduler < self.lora_config.lora_alpha:
+                self.alpha_scheduler += 0.1
+                self.set_lora_alpha(self.alpha_scheduler)
+            elif self.alpha_scheduler != self.lora_config.lora_alpha:
+                self.alpha_scheduler = self.lora_config.lora_alpha
+                self.set_lora_alpha(self.alpha_scheduler)
+            self.lora_steps += 1
+            if self.lora_steps % 2000 == 0:
+                self.merge_and_reset_lora()
         return self._step(batch, batch_idx, "train")
 
     def validation_step(self, batch, batch_idx):

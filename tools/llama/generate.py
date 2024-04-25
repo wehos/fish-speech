@@ -25,7 +25,7 @@ if hasattr(torch._inductor.config, "fx_graph_cache"):
     # Experimental feature to reduce compilation times, will be on by default in future
     torch._inductor.config.fx_graph_cache = True
 
-
+MODE = 'audio'
 from fish_speech.models.text2semantic.llama import DualARTransformer, NaiveTransformer
 
 
@@ -102,6 +102,8 @@ def decode_one_token_ar(
             **sampling_kwargs,
         )[0]
     ]
+    if MODE == 'audio':
+        codebooks[0] = torch.zeros_like(codebooks[0]).long() + 32311
     x = x.hidden_states
 
     # Cleanup the cache
@@ -123,6 +125,8 @@ def decode_one_token_ar(
         )[0]
         x = model.fast_embeddings(a)
         codebooks.append(a)
+        if MODE == 'text':
+            codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
 
     return torch.stack(codebooks, dim=0)
 
@@ -137,12 +141,14 @@ def decode_one_token_naive(
     x = model.forward_generate(x, input_pos)
 
     codebooks = [
-        sample(
+        torch.zeros_like(sample(
             x.token_logits,
             previous_tokens=None,  # Disable repetition penalty for the token codebook
             **sampling_kwargs,
-        )[0]
+        )[0]).long()
     ]
+    if MODE == 'audio':
+        codebooks[0] = torch.zeros_like(codebooks[0]).long() + 32311
 
     for i in range(model.config.num_codebooks):
         codebooks.append(
@@ -154,6 +160,8 @@ def decode_one_token_naive(
                 **sampling_kwargs,
             )[0]
         )
+        if MODE == 'text':
+            codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
 
     return torch.stack(codebooks, dim=0)
 
@@ -289,20 +297,14 @@ def encode_tokens(
     speaker=None,
     num_codebooks=4,
 ):
-    string = clean_text(string)
+#     string = clean_text(string)
 
-    if speaker is not None:
-        string = f"[SPK: {speaker}] {string}"
-
-    string = (
-        f"<|im_start|>user<|im_sep|>{string}<|im_end|><|im_start|>assistant<|im_sep|>"
-    )
     if bos:
         string = f"<|begin_of_sequence|>{string}"
 
     new_tokens = tokenizer.encode(
         string,
-        add_special_tokens=False,
+        add_special_tokens=bos,
         max_length=10**6,
         truncation=False,
     )
@@ -350,7 +352,7 @@ def load_model(
 ):
     with initialize(version_base="1.3", config_path="../../fish_speech/configs/model"):
         cfg = compose(
-            config_name=config_name, overrides=[f"config.max_seq_len={max_length}"]
+            config_name=config_name#, overrides=[f"config.max_seq_len={max_length}"]
         )
 
     model: Union[NaiveTransformer, DualARTransformer] = instantiate(cfg)
@@ -382,8 +384,7 @@ def load_model(
             for k, v in checkpoint.items()
             if k.startswith("model.")
         }
-
-    model.load_state_dict(checkpoint, assign=True)
+    model.load_state_dict(checkpoint, strict=False)
 
     model = model.to(device=device, dtype=precision)
     logger.info("Restored model from checkpoint")
@@ -446,7 +447,6 @@ def generate_long(
 ):
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-
     use_prompt = prompt_text is not None and prompt_tokens is not None
     encoded = []
     texts = split_text(text, chunk_length) if iterative_prompt else [text]
@@ -549,9 +549,11 @@ def generate_long(
 
             codes = codes - 2
             if not (codes >= 0).all():
-                global_encoded.pop()
-                logger.warning(f"Negative code found: {codes}, retrying ...")
-                continue
+                print((codes < 0).any(1).sum().item(), 'codes has been removed due to negative.')
+                codes = codes[:, :, (codes >= 0).any(1)[0]]
+#                 global_encoded.pop()
+#                 logger.warning(f"Negative code found: {codes}, retrying ...")
+#                 continue
 
             decoded = y[:, prompt_length:-1].clone()
             if decoded[0, -1] != im_end_id:  # <im_end>
@@ -567,40 +569,39 @@ def generate_long(
 
         codes = torch.cat(all_codes, dim=1)
         assert (codes >= 0).all(), f"Negative code found: {codes}"
-
         yield codes
 
 
-@click.command()
-@click.option(
-    "--text",
-    type=str,
-    default="你说的对, 但是原神是一款由米哈游自主研发的开放世界手游.",
-)
-@click.option("--prompt-text", type=str, default=None)
-@click.option(
-    "--prompt-tokens", type=click.Path(path_type=Path, exists=True), default=None
-)
-@click.option("--num-samples", type=int, default=1)
-@click.option("--max-new-tokens", type=int, default=0)
-@click.option("--top-k", type=int, default=None)
-@click.option("--top-p", type=float, default=0.7)
-@click.option("--repetition-penalty", type=float, default=1.5)
-@click.option("--temperature", type=float, default=0.7)
-@click.option(
-    "--checkpoint-path",
-    type=click.Path(path_type=Path, exists=True),
-    default="results/text2semantic_400m_finetune/step_000002000.pth",
-)
-@click.option("--config-name", type=str, default="dual_ar_8_codebook_small")
-@click.option("--tokenizer", type=str, default="fishaudio/fish-speech-1")
-@click.option("--compile/--no-compile", default=False)
-@click.option("--seed", type=int, default=42)
-@click.option("--speaker", type=str, default=None)
-@click.option("--half/--no-half", default=False)
-@click.option("--iterative-prompt/--no-iterative-prompt", default=True)
-@click.option("--max-length", type=int, default=2048)
-@click.option("--chunk-length", type=int, default=30)
+# @click.command()
+# @click.option(
+#     "--text",
+#     type=str,
+#     default="你说的对, 但是原神是一款由米哈游自主研发的开放世界手游.",
+# )
+# @click.option("--prompt-text", type=str, default=None)
+# @click.option(
+#     "--prompt-tokens", type=click.Path(path_type=Path, exists=True), default=None
+# )
+# @click.option("--num-samples", type=int, default=1)
+# @click.option("--max-new-tokens", type=int, default=0)
+# @click.option("--top-k", type=int, default=None)
+# @click.option("--top-p", type=float, default=0.7)
+# @click.option("--repetition-penalty", type=float, default=1.5)
+# @click.option("--temperature", type=float, default=0.7)
+# @click.option(
+#     "--checkpoint-path",
+#     type=click.Path(path_type=Path, exists=True),
+#     default="results/text2semantic_400m_finetune/step_000002000.pth",
+# )
+# @click.option("--config-name", type=str, default="dual_ar_8_codebook_small")
+# @click.option("--tokenizer", type=str, default="fishaudio/fish-speech-1")
+# @click.option("--compile/--no-compile", default=False)
+# @click.option("--seed", type=int, default=42)
+# @click.option("--speaker", type=str, default=None)
+# @click.option("--half/--no-half", default=False)
+# @click.option("--iterative-prompt/--no-iterative-prompt", default=True)
+# @click.option("--max-length", type=int, default=2048)
+# @click.option("--chunk-length", type=int, default=30)
 def main(
     text: str,
     prompt_text: Optional[str],
@@ -666,8 +667,10 @@ def main(
     )
 
     for idx, codes in enumerate(generator):
-        np.save(f"codes_{idx}.npy", codes.cpu().numpy())
-        logger.info(f"Saved codes to codes_{idx}.npy")
+#         np.save(f"codes_{idx}.npy", codes.cpu().numpy())
+#         logger.info(f"Saved codes to codes_{idx}.npy")
+        
+        return codes, tokenizer.decode(global_encoded[-1][0])
 
 
 if __name__ == "__main__":
