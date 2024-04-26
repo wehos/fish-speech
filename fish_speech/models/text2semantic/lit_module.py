@@ -269,25 +269,9 @@ class TextToSemantic(L.LightningModule):
             codebook_logits.reshape(-1, codebook_logits.size(-1)),
             codebook_labels.reshape(-1),
             ignore_index=-100,
-        ) + F.cross_entropy(
-            codebook_logits[:, :, 0].reshape(-1, codebook_logits.size(-1)),
-            codebook_labels[:, :, 0].reshape(-1),
-            ignore_index=-100,
-        ) * 2 + F.cross_entropy(
-            codebook_logits[:, :, 1].reshape(-1, codebook_logits.size(-1)),
-            codebook_labels[:, :, 1].reshape(-1),
-            ignore_index=-100,
-        ) * 1.5 + F.cross_entropy(
-            codebook_logits[:, :, 2].reshape(-1, codebook_logits.size(-1)),
-            codebook_labels[:, :, 2].reshape(-1),
-            ignore_index=-100,
-        ) + F.cross_entropy(
-            codebook_logits[:, :, 3].reshape(-1, codebook_logits.size(-1)),
-            codebook_labels[:, :, 3].reshape(-1),
-            ignore_index=-100,
-        ) * 0.5
+        )
 
-        loss = semantic_loss / 6 #base_loss + semantic_loss
+        loss = semantic_loss #base_loss + semantic_loss
 
         # If we use dpo
         if self.use_dpo:
@@ -390,17 +374,6 @@ class TextToSemantic(L.LightningModule):
         # Top-5 accuracy
         accuracy = self.get_accuracy(codebook_logits, codebook_labels)
         self.log(
-            f"{stage}/semantic_loss",
-            semantic_loss,
-            on_step=True,
-            on_epoch=False,
-            prog_bar=False,
-            logger=True,
-        )
-
-        # Top-5 accuracy
-        accuracy = self.get_accuracy(codebook_logits, codebook_labels)
-        self.log(
             f"{stage}/top_5_accuracy",
             accuracy,
             on_step=is_train,
@@ -409,7 +382,7 @@ class TextToSemantic(L.LightningModule):
             logger=True,
             sync_dist=not is_train,
         )
-
+        
         if self.model.config.num_codebooks != self.model.config.num_in_codebooks:
             accuracy = self.get_accuracy(
                 codebook_logits[:, :, : self.model.config.num_in_codebooks],
@@ -425,7 +398,6 @@ class TextToSemantic(L.LightningModule):
                 logger=True,
                 sync_dist=not is_train,
             )
-
         return loss
 
     def get_accuracy(self, logits, labels):

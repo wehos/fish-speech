@@ -38,61 +38,61 @@ def load_model(config_name, checkpoint_path, device="cuda"):
     return model
 
 
-@torch.no_grad()
-@click.command()
-@click.option(
-    "--input-path",
-    "-i",
-    default="test.wav",
-    type=click.Path(exists=True, path_type=Path),
-)
-@click.option(
-    "--output-path", "-o", default="fake.wav", type=click.Path(path_type=Path)
-)
-@click.option("--config-name", "-cfg", default="vqgan_pretrain")
-@click.option(
-    "--checkpoint-path",
-    "-ckpt",
-    default="checkpoints/vq-gan-group-fsq-2x1024.pth",
-)
-@click.option(
-    "--device",
-    "-d",
-    default="cuda",
-)
-def main(input_path, output_path, config_name, checkpoint_path, device):
+# @torch.no_grad()
+# @click.command()
+# @click.option(
+#     "--input-path",
+#     "-i",
+#     default="test.wav",
+#     type=click.Path(exists=True, path_type=Path),
+# )
+# @click.option(
+#     "--output-path", "-o", default="fake.wav", type=click.Path(path_type=Path)
+# )
+# @click.option("--config-name", "-cfg", default="vqgan_pretrain")
+# @click.option(
+#     "--checkpoint-path",
+#     "-ckpt",
+#     default="checkpoints/vq-gan-group-fsq-2x1024.pth",
+# )
+# @click.option(
+#     "--device",
+#     "-d",
+#     default="cuda",
+# )
+def vq_main(indices, config_name='vqgan_pretrain', checkpoint_path="checkpoints/vq-gan-group-fsq-2x1024.pth", device="cuda"):
     model = load_model(config_name, checkpoint_path, device=device)
 
-    if input_path.suffix in AUDIO_EXTENSIONS:
-        logger.info(f"Processing in-place reconstruction of {input_path}")
-        # Load audio
-        audio, _ = librosa.load(
-            input_path,
-            sr=model.sampling_rate,
-            mono=True,
-        )
-        audios = torch.from_numpy(audio).to(model.device)[None, None, :]
-        logger.info(
-            f"Loaded audio with {audios.shape[2] / model.sampling_rate:.2f} seconds"
-        )
+    # if input_path.suffix in AUDIO_EXTENSIONS:
+    #     logger.info(f"Processing in-place reconstruction of {input_path}")
+    #     # Load audio
+    #     audio, _ = librosa.load(
+    #         input_path,
+    #         sr=model.sampling_rate,
+    #         mono=True,
+    #     )
+    #     audios = torch.from_numpy(audio).to(model.device)[None, None, :]
+    #     logger.info(
+    #         f"Loaded audio with {audios.shape[2] / model.sampling_rate:.2f} seconds"
+    #     )
 
-        # VQ Encoder
-        audio_lengths = torch.tensor(
-            [audios.shape[2]], device=model.device, dtype=torch.long
-        )
-        indices = model.encode(audios, audio_lengths)[0][0]
+    #     # VQ Encoder
+    #     audio_lengths = torch.tensor(
+    #         [audios.shape[2]], device=model.device, dtype=torch.long
+    #     )
+    #     indices = model.encode(audios, audio_lengths)[0][0]
 
-        logger.info(f"Generated indices of shape {indices.shape}")
+    #     logger.info(f"Generated indices of shape {indices.shape}")
 
-        # Save indices
-        np.save(output_path.with_suffix(".npy"), indices.cpu().numpy())
-    elif input_path.suffix == ".npy":
-        logger.info(f"Processing precomputed indices from {input_path}")
-        indices = np.load(input_path)
-        indices = torch.from_numpy(indices).to(model.device).long()
-        assert indices.ndim == 2, f"Expected 2D indices, got {indices.ndim}"
-    else:
-        raise ValueError(f"Unknown input type: {input_path}")
+    #     # Save indices
+    #     np.save(output_path.with_suffix(".npy"), indices.cpu().numpy())
+    # elif input_path.suffix == ".npy":
+    #     logger.info(f"Processing precomputed indices from {input_path}")
+    #     indices = np.load(input_path)
+    #     indices = torch.from_numpy(indices).to(model.device).long()
+    #     assert indices.ndim == 2, f"Expected 2D indices, got {indices.ndim}"
+    # else:
+    #     raise ValueError(f"Unknown input type: {input_path}")
 
     # Restore
     feature_lengths = torch.tensor([indices.shape[1]], device=model.device)
@@ -107,9 +107,9 @@ def main(input_path, output_path, config_name, checkpoint_path, device):
 
     # Save audio
     fake_audio = fake_audios[0, 0].float().cpu().numpy()
-    sf.write(output_path, fake_audio, model.sampling_rate)
-    logger.info(f"Saved audio to {output_path}")
-
+    # sf.write(output_path, fake_audio, model.sampling_rate)
+    # logger.info(f"Saved audio to {output_path}")
+    return fake_audio
 
 if __name__ == "__main__":
     main()

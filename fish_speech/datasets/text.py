@@ -322,42 +322,36 @@ class AutoAugTextDataset(IterableDataset):
 
         all_tokens, all_labels = [], []
         while remaining_tokens > 0 and len(samples) > 0:
-            if random.random() < self.repetition_prob:
-                # Repeat the same sentence
-                sentence = samples[0]
-            else:
-                #def count_substrings(s, length=4):
-                #    counts = {}
-                #    for i in range(len(s) - length + 1):
-                #        substring = s[i:i+length]
-                #        if substring in counts:
-                #            counts[substring] += 1
-                #        else:
-                #            counts[substring] = 1
-                #    if len(counts)>0:
-                #        return max(counts.values())
-                #    else:
-                #        return 0
-                #skipped=False
-                #while count_substrings(samples[-1].text)>7 and len(samples)>0:
-                #    samples.pop(0)
-                #    skipped=True
-                #if skipped:
-                #    if len(all_tokens) > 0:
-                #        if random.random() > (1-0.15*(len(all_tokens))):
-                #            break
-                #        else:
-                #            all_tokens, all_labels = [], []
-                #            if len(samples)==0:
-                #                return None
-                #    elif len(samples)==0:
-                #        return None
-                sentence = samples.pop(0)
-            
+            #def count_substrings(s, length=4):
+            #    counts = {}
+            #    for i in range(len(s) - length + 1):
+            #        substring = s[i:i+length]
+            #        if substring in counts:
+            #            counts[substring] += 1
+            #        else:
+            #            counts[substring] = 1
+            #    if len(counts)>0:
+            #        return max(counts.values())
+            #    else:
+            #        return 0
+            #skipped=False
+            #while count_substrings(samples[-1].text)>7 and len(samples)>0:
+            #    samples.pop(0)
+            #    skipped=True
+            #if skipped:
+            #    if len(all_tokens) > 0:
+            #        if random.random() > (1-0.15*(len(all_tokens))):
+            #            break
+            #        else:
+            #            all_tokens, all_labels = [], []
+            #            if len(samples)==0:
+            #                return None
+            #    elif len(samples)==0:
+            #        return None
+            sentence = samples.pop(0)
+        
             text = random.choice(sentence.texts)
-            text, length = self.tokenize_sentence(
-                sentence.text, sentence.phones
-            )
+            text, length = self.tokenize_sentence(text)
             remaining_tokens -=  len(sentence.semantics[0].values)
             
             assert not use_interactive, 'My new multi-task implementation does not support interactive mode. Will leave it for sft later'
@@ -387,7 +381,6 @@ class AutoAugTextDataset(IterableDataset):
                 semantics=final_semantic,
                 speaker=response.name if self.use_speaker else None,
                 add_bos=True,
-                mode = mode,
             )
             all_tokens.append(tokens)
             all_labels.append(labels)
@@ -476,7 +469,6 @@ class AutoAugTextDataset(IterableDataset):
         semantics=list,
         speaker: Optional[str] = None,
         add_bos: bool = True,
-        mode: str = None,
     ):
 #         if speaker is not None:
 #             sentences = [f"[SPK: {speaker}]"] + sentences
@@ -531,11 +523,8 @@ class AutoAugTextDataset(IterableDataset):
 #         # Mask out the <s> tokens for semantic, predict semantic tokens only
 #         # Since we don't mask out the input tokens, the language modeling still works
 #         labels[1:, : (prompt_length + bos_bias)] = -100
-        if mode in ['text', 'phones']:
-            task = random.choice(['asr', 'voice'])
-        else:
-            task = random.choice(['tts', 'voice'])
-        task = 'voice'
+        task = random.choice(['asr', 'voice', 'tts', 'voice'])
+        task = 'tts'
         
         if task == 'text':
             encoded = self.tokenizer.encode(
@@ -551,7 +540,7 @@ class AutoAugTextDataset(IterableDataset):
                 for i in range(num_codebooks)
             ]
             for idx, book in enumerate(codes):
-                book.extend([CODEBOOK_EOS_TOKEN_ID] * 2)
+                book.extend([CODEBOOK_EOS_TOKEN_ID] * 1)
             tokens = encoded + [self.tokenizer.eos_token_id]
             if add_bos:
                 tokens = [self.tokenizer.bos_token_id] + tokens
@@ -576,7 +565,7 @@ class AutoAugTextDataset(IterableDataset):
                         codes[book_idx].append(int(j) + 2)
     
             for idx, book in enumerate(codes):
-                book.extend([CODEBOOK_EOS_TOKEN_ID] * 2)
+                book.extend([CODEBOOK_EOS_TOKEN_ID] * 1)
     
             # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
             tokens = [self.semantic_token_id] * semantic_length + [self.tokenizer.eos_token_id]
@@ -590,7 +579,8 @@ class AutoAugTextDataset(IterableDataset):
             labels[0, :] = -100
             
         elif task == 'tts':
-            final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
+            #final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
+            final_text = '### Script\n' + ' '.join(sentences) + '\n### Audio\n' 
             encoded = self.tokenizer.encode(
                 final_text,
                 add_special_tokens=False,
@@ -613,7 +603,7 @@ class AutoAugTextDataset(IterableDataset):
                         codes[book_idx].append(int(j) + 2)
     
             for idx, book in enumerate(codes):
-                book.extend([CODEBOOK_EOS_TOKEN_ID] * 2)
+                book.extend([CODEBOOK_EOS_TOKEN_ID] * 1)
                 
     
             bos_bias = 1 if add_bos else 0
@@ -638,7 +628,7 @@ class AutoAugTextDataset(IterableDataset):
             labels[1:, :prompt_length] = -100
             
         elif task == 'asr':
-            prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_'+mode]) + "\n" 
+            prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_text']) + "\n" 
             suffix = " ASSISTANT: "+ ' '.join(sentences)
             prefix = self.tokenizer.encode(
                 prefix,
@@ -667,7 +657,7 @@ class AutoAugTextDataset(IterableDataset):
                         codes[book_idx].append(int(j) + 2)
             for idx, book in enumerate(codes):
                 book.extend([CODEBOOK_PAD_TOKEN_ID] * len(suffix))
-                book.extend([CODEBOOK_EOS_TOKEN_ID] * 2)
+                book.extend([CODEBOOK_EOS_TOKEN_ID] * 1)
     
             # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
             tokens = (
@@ -844,21 +834,21 @@ class TextDataModule(LightningDataModule):
 if __name__ == "__main__":
     from tqdm import tqdm
 
+    #ds = AutoAugTextDataset(
+    #    ["data/protos"],
+    #    tokenizer=AutoTokenizer.from_pretrained("fishaudio/fish-speech-1"),
+    #    use_speaker=False,
+    #    interactive_prob=0.,
+    #    use_negative_samples=False,
+    #)
+
     ds = AutoAugTextDataset(
-        ["data/protos"],
-        tokenizer=AutoTokenizer.from_pretrained("fishaudio/fish-speech-1"),
+        ['data/protos/test'],
+        tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),
         use_speaker=False,
-        interactive_prob=0.,
+        interactive_prob=0,
         use_negative_samples=False,
     )
-
-    # ds = AutoAugTextDataset(
-    #     tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),
-    #     use_speaker=True,
-    #     interactive_prob=1.0,
-    #     use_data_server=False,
-    #     proto_files=["data/wenet-speech.protos"],
-    # )
 
     dm = TextDataModule(
         train_dataset=ds,
@@ -870,5 +860,5 @@ if __name__ == "__main__":
     )
 
     for batch in tqdm(dm.train_dataloader()):
-        pass
-        #print(batch)
+        print(batch)
+        break

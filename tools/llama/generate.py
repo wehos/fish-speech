@@ -299,8 +299,8 @@ def encode_tokens(
 ):
 #     string = clean_text(string)
 
-    if bos:
-        string = f"<|begin_of_sequence|>{string}"
+    # if bos:
+    #     string = f"<|begin_of_sequence|>{string}"
 
     new_tokens = tokenizer.encode(
         string,
@@ -622,8 +622,11 @@ def main(
     iterative_prompt: bool,
     max_length: int,
     chunk_length: int,
+    mode: bool
 ) -> None:
     device = "cuda"
+    global MODE
+    MODE = mode
 
     precision = torch.half if half else torch.bfloat16
 
@@ -670,7 +673,7 @@ def main(
 #         np.save(f"codes_{idx}.npy", codes.cpu().numpy())
 #         logger.info(f"Saved codes to codes_{idx}.npy")
         
-        return codes, tokenizer.decode(global_encoded[-1][0])
+        return codes#, tokenizer.decode(global_encoded[-1][0])
 
 
 if __name__ == "__main__":
