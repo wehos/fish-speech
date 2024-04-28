@@ -581,6 +581,7 @@ class AutoAugTextDataset(IterableDataset):
         elif task == 'tts':
             #final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
             final_text = '### Script\n' + ' '.join(sentences) + '\n### Audio\n' 
+            print(final_text)
             encoded = self.tokenizer.encode(
                 final_text,
                 add_special_tokens=False,
@@ -607,7 +608,6 @@ class AutoAugTextDataset(IterableDataset):
                 
     
             bos_bias = 1 if add_bos else 0
-    
             # Pack the tokens and semantics (add <s> and </s> to semantic tokens)
             tokens = (
                 encoded
@@ -860,5 +860,5 @@ if __name__ == "__main__":
     )
 
     for batch in tqdm(dm.train_dataloader()):
-        print(batch)
+        torch.save(batch, 'temp.pt')
         break

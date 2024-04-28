@@ -87,6 +87,55 @@ def sample(
     return idx_next, probs
 
 
+# def decode_one_token_ar(
+#     model: DualARTransformer,
+#     x: torch.Tensor,
+#     input_pos: torch.Tensor,
+#     previous_tokens: torch.Tensor = None,
+#     **sampling_kwargs,
+# ) -> torch.Tensor:
+#     x = model.forward_generate(x, input_pos)
+#     codebooks = [
+#         sample(
+#             x.logits,
+#             previous_tokens=None,  # Disable repetition penalty for the token codebook
+#             **sampling_kwargs,
+#         )[0]
+#     ]
+#     if MODE == 'audio':
+#         codebooks[0] = torch.zeros_like(codebooks[0]).long() #+ 32311
+#     x = x.hidden_states
+
+#     # Cleanup the cache
+#     for layer in model.fast_layers:
+#         layer.attention.kv_cache.k_cache.fill_(0)
+#         layer.attention.kv_cache.v_cache.fill_(0)
+
+#     for codebook_idx in range(model.config.num_codebooks):
+#         input_pos = torch.tensor([codebook_idx], device=x.device, dtype=torch.long)
+#         logits = model.forward_generate_fast(x, input_pos)
+#         a = sample(
+#             logits,
+#             previous_tokens=(
+#                 previous_tokens[codebook_idx + 1]
+#                 if previous_tokens is not None
+#                 else None
+#             ),
+#             **sampling_kwargs,
+#         )[0]
+#         x = model.fast_embeddings(a)
+#         codebooks.append(a)
+#         if MODE == 'text':
+#             codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
+
+#     return torch.stack(codebooks, dim=0)
+
+import torch.nn.functional as F
+reference = torch.load('/fish/fish-speech/temp.pt')['inputs']
+offset = (reference[0, 0]==0).nonzero()[0]
+reference = reference[0, :, offset:]
+reference = F.pad(reference, (0, 1, 0, 0), "constant", 1)
+total_acc = []
 def decode_one_token_ar(
     model: DualARTransformer,
     x: torch.Tensor,
@@ -94,6 +143,9 @@ def decode_one_token_ar(
     previous_tokens: torch.Tensor = None,
     **sampling_kwargs,
 ) -> torch.Tensor:
+    i0 = 1 if len(input_pos)>1 else input_pos.item()-offset.item()
+    if i0 > 1:
+        x = (reference.to(x.device))[:, i0-1:i0][None]
     x = model.forward_generate(x, input_pos)
     codebooks = [
         sample(
@@ -110,11 +162,12 @@ def decode_one_token_ar(
     for layer in model.fast_layers:
         layer.attention.kv_cache.k_cache.fill_(0)
         layer.attention.kv_cache.v_cache.fill_(0)
-
+    
+    acc = []
     for codebook_idx in range(model.config.num_codebooks):
         input_pos = torch.tensor([codebook_idx], device=x.device, dtype=torch.long)
         logits = model.forward_generate_fast(x, input_pos)
-        a = sample(
+        a0 = sample(
             logits,
             previous_tokens=(
                 previous_tokens[codebook_idx + 1]
@@ -123,13 +176,30 @@ def decode_one_token_ar(
             ),
             **sampling_kwargs,
         )[0]
-        x = model.fast_embeddings(a)
-        codebooks.append(a)
+        a = (reference.to(logits.device))[codebook_idx+1, i0].reshape(a0.shape)
+        
+        _, indices = logits.topk(5, dim=-1)
+        labels = a
+        correct = indices.eq(labels.unsqueeze(-1))
+        correct[labels == -100] = 0
+        correct = correct.sum()
+        accuracy = correct / (labels != -100).sum()
+        acc.append(accuracy.item())
+        
+        # print('input_pos', i0, 'codebook_idx', codebook_idx, 'pred', a0.item(), 'label', a.item())
+        if False: # Teacher forcing without AR
+            x = model.fast_embeddings(a0)
+        else: # All teacher forcing
+            x = model.fast_embeddings(a)
+        if a.item() == 1:
+            a0 = a0 - a0 + 1
+        codebooks.append(a0)
         if MODE == 'text':
             codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
-
+    print(sum(acc)/len(acc), end='\t')
+    global total_acc
+    total_acc.append(sum(acc)/len(acc))
     return torch.stack(codebooks, dim=0)
-
 
 def decode_one_token_naive(
     model: NaiveTransformer,
@@ -148,7 +218,7 @@ def decode_one_token_naive(
         )[0]).long()
     ]
     if MODE == 'audio':
-        codebooks[0] = torch.zeros_like(codebooks[0]).long() + 32311
+        codebooks[0] = torch.zeros_like(codebooks[0]).long() #+ 32311
 
     for i in range(model.config.num_codebooks):
         codebooks.append(
@@ -181,6 +251,8 @@ def decode_n_tokens(
         dtype=torch.int,
         device=cur_token.device,
     )
+    global total_acc
+    total_acc = []
 
     for i in tqdm(range(num_new_tokens)):
         # We need to get windowed repeat penalty
@@ -208,12 +280,13 @@ def decode_n_tokens(
         )
 
         if (
-            cur_token[0, 0, -1] == eos_token_id
-            or cur_token[0, 0, -1] == im_end_id
-            or (cur_token[0, 1:, -1] == CODEBOOK_EOS_TOKEN_ID).any()
+            # cur_token[0, 0, -1] == 2
+            # or cur_token[0, 0, -1] == im_end_id
+            # or 
+            (cur_token[0, 1:, -1] == CODEBOOK_EOS_TOKEN_ID).any()
         ):
             break
-
+    print('Total top5', sum(total_acc)/len(total_acc))
     return previous_tokens[:, : i + 1]
 
 
