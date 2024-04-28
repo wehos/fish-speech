@@ -581,7 +581,7 @@ class AutoAugTextDataset(IterableDataset):
         elif task == 'tts':
             #final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
             final_text = '### Script\n' + ' '.join(sentences) + '\n### Audio\n' 
-            print(final_text)
+            #print(final_text)
             encoded = self.tokenizer.encode(
                 final_text,
                 add_special_tokens=False,

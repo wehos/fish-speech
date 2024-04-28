@@ -104,7 +104,7 @@ def train(cfg: DictConfig) -> tuple[dict, dict]:
             ckpt = torch.load(ckpt_path, map_location=model.device)
             if "state_dict" in ckpt:
                 ckpt = ckpt["state_dict"]
-            err = model.load_state_dict(ckpt, strict=False)
+            err = model.model.load_state_dict(ckpt, strict=False)
             log.info(f"Error loading state dict: {err}")
             ckpt_path = None
             

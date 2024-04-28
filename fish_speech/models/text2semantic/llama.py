@@ -18,7 +18,7 @@ def find_multiple(n: int, k: int) -> int:
 
 @dataclass
 class BaseModelArgs:
-    vocab_size: int = 32000
+    vocab_size: int = 32064
     n_layer: int = 32
     n_head: int = 32
     dim: int = 4096
@@ -98,15 +98,15 @@ class BaseTransformer(nn.Module):
         super().__init__()
         self.config = config
 
-        self.tok_embeddings = nn.Embedding(32000, config.dim)
-        self.added_embeddings = nn.Embedding(config.vocab_size + config.codebook_size * config.num_in_codebooks - 32000, config.dim)
+        self.tok_embeddings = nn.Embedding(32064, config.dim)
+        self.added_embeddings = nn.Embedding(config.vocab_size + config.codebook_size * config.num_in_codebooks - 32064, config.dim)
 
         self.layers = nn.ModuleList(
             TransformerBlock(config, use_sdpa=True) for _ in range(config.n_layer)
         )
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
-        self.output = nn.Linear(config.dim, 32000, bias=False)
-        self.added_output = nn.Linear(config.dim, config.vocab_size - 32000, bias=False)
+        self.output = nn.Linear(config.dim, 32064, bias=False)
+        self.added_output = nn.Linear(config.dim, config.vocab_size - 32064, bias=False)
 
         self.register_buffer(
             "freqs_cis",

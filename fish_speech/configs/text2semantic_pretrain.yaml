@@ -1,28 +1,28 @@
 defaults:
   - base
-  - model@model.model: dual_ar_2_codebook_7b
+  - model@model.model: dual_ar_2_codebook_3b
   - _self_
  
-project: text2semantic_pretrain_dev_audio
+project: text2semantic_pretrain_audio3b
 max_length: 2048
-ckpt_path: checkpoints/consolidated.00.pth
+ckpt_path: checkpoints/model.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 1
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
     stage: 2
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
-  max_steps: 100_000
+  max_steps: 150_000
   precision: bf16-true
-  limit_val_batches: 10
+  limit_val_batches: 50
 
 # Dataset Configuration
 tokenizer:
   _target_: transformers.AutoTokenizer.from_pretrained
-  pretrained_model_name_or_path: fishaudio/speech-lm-v1  #fishaudio/fish-speech-1
+  pretrained_model_name_or_path: microsoft/Phi-3-mini-4k-instruct #fishaudio/speech-lm-v1  #fishaudio/fish-speech-1
 
 # Dataset Configuration
 train_dataset:
@@ -49,8 +49,8 @@ data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
-  num_workers: 8
-  batch_size: 4
+  num_workers: 16
+  batch_size: 32
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
@@ -60,7 +60,7 @@ model:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 1e-4
+    lr: 2e-4
     weight_decay: 0.1
     betas: [0.9, 0.95]
     eps: 1e-5
