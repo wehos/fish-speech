@@ -9,7 +9,7 @@ ckpt_path: checkpoints/model.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 2
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
     stage: 2
@@ -77,6 +77,6 @@ model:
     lr_lambda:
       _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
-      num_warmup_steps: 1000
+      num_warmup_steps: 2000
       num_training_steps: ${trainer.max_steps}
       final_lr_ratio: 0.1
