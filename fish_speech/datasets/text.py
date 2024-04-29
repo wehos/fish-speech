@@ -335,7 +335,7 @@ class AutoAugTextDataset(IterableDataset):
             #    else:
             #        return 0
             #skipped=False
-            #while count_substrings(samples[-1].text)>7 and len(samples)>0:
+            #while count_substrings(samples[0].text)>7 and len(samples)>0:
             #    samples.pop(0)
             #    skipped=True
             #if skipped:
