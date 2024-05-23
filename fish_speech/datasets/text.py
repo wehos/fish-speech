@@ -523,8 +523,7 @@ class AutoAugTextDataset(IterableDataset):
 #         # Mask out the <s> tokens for semantic, predict semantic tokens only
 #         # Since we don't mask out the input tokens, the language modeling still works
 #         labels[1:, : (prompt_length + bos_bias)] = -100
-        task = random.choice(['asr', 'voice', 'tts', 'voice'])
-        task = 'tts'
+        task = random.choice(['asr', 'tts', 'text', 'tts'])
         
         if task == 'text':
             encoded = self.tokenizer.encode(
@@ -579,8 +578,8 @@ class AutoAugTextDataset(IterableDataset):
             labels[0, :] = -100
             
         elif task == 'tts':
-            #final_text = system_prompt + " USER: " + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + " ASSISTANT: "
-            final_text = '### Script\n' + ' '.join(sentences) + '\n### Audio\n' 
+            final_text = "<|user|>\n" + random.choice(prompt_dict[task]) + "\n" + ' '.join(sentences) + "<|end|>\n<|assistant|>\n"
+            #final_text = '### Script\n' + ' '.join(sentences) + '\n### Audio\n' 
             #print(final_text)
             encoded = self.tokenizer.encode(
                 final_text,
@@ -625,11 +624,11 @@ class AutoAugTextDataset(IterableDataset):
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
             labels[0, :] = -100
-            labels[1:, :prompt_length] = -100
+            labels[1:, :(prompt_length+bos_bias)] = -100
             
         elif task == 'asr':
-            prefix = system_prompt + " USER: " + random.choice(prompt_dict[task+'_text']) + "\n" 
-            suffix = " ASSISTANT: "+ ' '.join(sentences)
+            prefix = "<|user|>\n" + random.choice(prompt_dict[task+'_text']) + "\n" 
+            suffix = "<|end|>\n<|assistant|>\n" + ' '.join(sentences)
             prefix = self.tokenizer.encode(
                 prefix,
                 add_special_tokens=False,
@@ -677,7 +676,7 @@ class AutoAugTextDataset(IterableDataset):
             # Mask out the <s> tokens for semantic, predict semantic tokens only
             # Since we don't mask out the input tokens, the language modeling still works
             labels[1:, :] = -100
-            labels[0, :(len(prefix) + semantic_length)] = -100
+            labels[0, :(len(prefix) + semantic_length + bos_bias + 2)] = -100
             
         
         tokens = tokens[:, :-1]
@@ -844,7 +843,7 @@ if __name__ == "__main__":
 
     ds = AutoAugTextDataset(
         ['data/protos/test'],
-        tokenizer=AutoTokenizer.from_pretrained("fishaudio/speech-lm-v1"),
+        tokenizer=AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct"),
         use_speaker=False,
         interactive_prob=0,
         use_negative_samples=False,
@@ -855,10 +854,10 @@ if __name__ == "__main__":
         val_dataset=ds,
         tokenizer=ds.tokenizer,
         batch_size=1,
-        max_length=1024,
+        max_length=512,
         num_workers=0,
     )
 
     for batch in tqdm(dm.train_dataloader()):
-        torch.save(batch, 'temp.pt')
+        torch.save(batch, 'asr.pt')
         break

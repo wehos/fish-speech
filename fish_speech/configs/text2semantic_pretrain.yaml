@@ -4,18 +4,18 @@ defaults:
   - _self_
  
 project: text2semantic_pretrain_audio3b
-max_length: 2048
+max_length: 1024
 ckpt_path: checkpoints/model.pth
 resume_weights_only: true
 
 trainer:
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
     stage: 2
   gradient_clip_val: 1.0
   gradient_clip_algorithm: 'norm'
-  max_steps: 150_000
+  max_steps: 120_000
   precision: bf16-true
   limit_val_batches: 50
 
@@ -49,8 +49,8 @@ data:
   _target_: fish_speech.datasets.text.TextDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
-  num_workers: 16
-  batch_size: 32
+  num_workers: 10
+  batch_size: 40
   tokenizer: ${tokenizer}
   max_length: ${max_length}
   
@@ -60,7 +60,7 @@ model:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 2e-4
+    lr: 3e-4
     weight_decay: 0.1
     betas: [0.9, 0.95]
     eps: 1e-5
@@ -77,6 +77,6 @@ model:
     lr_lambda:
       _target_: fish_speech.scheduler.get_cosine_schedule_with_warmup_lr_lambda
       _partial_: true
-      num_warmup_steps: 2000
+      num_warmup_steps: 1000
       num_training_steps: ${trainer.max_steps}
       final_lr_ratio: 0.1

@@ -69,19 +69,19 @@ class TextToSemantic(L.LightningModule):
                 ]
             )
 
-        if hasattr(self.model, "fast_layers"):
-            # Dual-AR model
-            linears.extend([(self.model, "fast_output")])
+        #if hasattr(self.model, "fast_layers"):
+        #    # Dual-AR model
+        #    linears.extend([(self.model, "fast_output")])
 
-            for layer in self.model.fast_layers:
-                linears.extend([(layer.attention, "wqkv"), (layer.attention, "wo")])
-                linears.extend(
-                    [
-                        (layer.feed_forward, "w1"),
-                        (layer.feed_forward, "w2"),
-                        (layer.feed_forward, "w3"),
-                    ]
-                )
+        #    for layer in self.model.fast_layers:
+        #       linears.extend([(layer.attention, "wqkv"), (layer.attention, "wo")])
+        #        linears.extend(
+        #            [
+        #                (layer.feed_forward, "w1"),
+        #                (layer.feed_forward, "w2"),
+        #                (layer.feed_forward, "w3"),
+        #            ]
+        #        )
 
         for module, layer in linears:
             updated_linear = lora.Linear(
@@ -271,7 +271,7 @@ class TextToSemantic(L.LightningModule):
             ignore_index=-100,
         )
 
-        loss = semantic_loss #base_loss + semantic_loss
+        loss = base_loss + semantic_loss
 
         # If we use dpo
         if self.use_dpo:
@@ -418,7 +418,7 @@ class TextToSemantic(L.LightningModule):
                 self.alpha_scheduler = self.lora_config.lora_alpha
                 self.set_lora_alpha(self.alpha_scheduler)
             self.lora_steps += 1
-            if self.lora_steps % 2000 == 0:
+            if self.lora_steps % 200 == 0:
                 self.merge_and_reset_lora()
         return self._step(batch, batch_idx, "train")
 

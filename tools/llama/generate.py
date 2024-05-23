@@ -130,21 +130,22 @@ def sample(
 
 #     return torch.stack(codebooks, dim=0)
 
-import torch.nn.functional as F
-reference = torch.load('/fish/fish-speech/temp.pt')['inputs']
-offset = (reference[0, 0]==0).nonzero()[0]
-reference = reference[0, :, offset:]
-reference = F.pad(reference, (0, 1, 0, 0), "constant", 1)
-total_acc = []
+# import torch.nn.functional as F
+# reference = torch.load('/fish/fish-speech/temp.pt')['inputs']
+# offset = (reference[0, 0]==0).nonzero()[0]
+# reference = reference[0, :, offset:]
+# reference = F.pad(reference, (0, 1, 0, 0), "constant", 1)
+# total_acc = []
 def decode_one_token_ar(
     model: DualARTransformer,
     x: torch.Tensor,
     input_pos: torch.Tensor,
     previous_tokens: torch.Tensor = None,
+    teacher_forcing = False,
     **sampling_kwargs,
 ) -> torch.Tensor:
-    i0 = 1 if len(input_pos)>1 else input_pos.item()-offset.item()
-    if i0 > 1:
+    i0 = 1 #if len(input_pos)>1 else input_pos.item()-offset.item()
+    if i0 > 1 and teacher_forcing:
         x = (reference.to(x.device))[:, i0-1:i0][None]
     x = model.forward_generate(x, input_pos)
     codebooks = [
@@ -176,29 +177,34 @@ def decode_one_token_ar(
             ),
             **sampling_kwargs,
         )[0]
-        a = (reference.to(logits.device))[codebook_idx+1, i0].reshape(a0.shape)
         
-        _, indices = logits.topk(5, dim=-1)
-        labels = a
-        correct = indices.eq(labels.unsqueeze(-1))
-        correct[labels == -100] = 0
-        correct = correct.sum()
-        accuracy = correct / (labels != -100).sum()
-        acc.append(accuracy.item())
+        if teacher_forcing:
+            a = (reference.to(logits.device))[codebook_idx+1, i0].reshape(a0.shape)
+            _, indices = logits.topk(5, dim=-1)
+            labels = a
+            correct = indices.eq(labels.unsqueeze(-1))
+            correct[labels == -100] = 0
+            correct = correct.sum()
+            accuracy = correct / (labels != -100).sum()
+            acc.append(accuracy.item())
+
+            # print('input_pos', i0, 'codebook_idx', codebook_idx, 'pred', a0.item(), 'label', a.item())
         
-        # print('input_pos', i0, 'codebook_idx', codebook_idx, 'pred', a0.item(), 'label', a.item())
-        if False: # Teacher forcing without AR
+            if False: # Teacher forcing without AR
+                x = model.fast_embeddings(a0)
+            else: # All teacher forcing
+                x = model.fast_embeddings(a)
+        else:
             x = model.fast_embeddings(a0)
-        else: # All teacher forcing
-            x = model.fast_embeddings(a)
-        if a.item() == 1:
-            a0 = a0 - a0 + 1
+#         if a.item() == 1:
+#             a0 = a0 - a0 + 1
         codebooks.append(a0)
         if MODE == 'text':
             codebooks[-1] = torch.zeros_like(codebooks[-1]).long()
-    print(sum(acc)/len(acc), end='\t')
-    global total_acc
-    total_acc.append(sum(acc)/len(acc))
+    if teacher_forcing:
+        print(sum(acc)/len(acc), end='\t')
+        global total_acc
+        total_acc.append(sum(acc)/len(acc))
     return torch.stack(codebooks, dim=0)
 
 def decode_one_token_naive(
@@ -280,13 +286,13 @@ def decode_n_tokens(
         )
 
         if (
-            # cur_token[0, 0, -1] == 2
+            cur_token[0, 0, -1] in [2, 32000]
             # or cur_token[0, 0, -1] == im_end_id
-            # or 
+            or 
             (cur_token[0, 1:, -1] == CODEBOOK_EOS_TOKEN_ID).any()
         ):
             break
-    print('Total top5', sum(total_acc)/len(total_acc))
+#     print('Total top5', sum(total_acc)/len(total_acc))
     return previous_tokens[:, : i + 1]
 
 
@@ -536,18 +542,20 @@ def generate_long(
         )
         logger.info(f"Encoded text: {text}")
 
-    if use_prompt:
-        encoded_prompt = encode_tokens(
-            tokenizer,
-            prompt_text,
-            prompt_tokens=prompt_tokens,
-            bos=True,
-            device=device,
-            speaker=speaker,
-            num_codebooks=model.config.num_codebooks,
-        )
+    if True:#use_prompt:
+        encoded = torch.load('asr.pt')['inputs'].to(device)[:, :, :511]
+        
+#         encoded_prompt = encode_tokens(
+#             tokenizer,
+#             prompt_text,
+#             prompt_tokens=prompt_tokens,
+#             bos=True,
+#             device=device,
+#             speaker=speaker,
+#             num_codebooks=model.config.num_codebooks,
+#         )
 
-        encoded[0] = torch.cat((encoded_prompt, encoded[0]), dim=1)
+#         encoded[0] = torch.cat((encoded_prompt, encoded[0]), dim=1)
 
     for sample_idx in range(num_samples):
         torch.cuda.synchronize()
@@ -618,30 +626,32 @@ def generate_long(
 
             # Put the generated tokens
             # since there is <im_end> and <eos> tokens, we remove last 2 tokens
-            codes = y[1:, prompt_length:-2].clone()
+            
+            codes = y[:, prompt_length:-1].clone()
 
-            codes = codes - 2
-            if not (codes >= 0).all():
-                print((codes < 0).any(1).sum().item(), 'codes has been removed due to negative.')
-                codes = codes[:, :, (codes >= 0).any(1)[0]]
+            codes[1:] = codes[1:] - 2
+            global MODE
+            if not (codes[1:] >= 0).all() and MODE == 'audio':
+                print((codes[1:] < 0).any(1).sum().item(), 'codes have been removed due to negative.')
+                codes = codes[:, :, (codes[1:] >= 0).any(1)[0]]
 #                 global_encoded.pop()
 #                 logger.warning(f"Negative code found: {codes}, retrying ...")
 #                 continue
 
             decoded = y[:, prompt_length:-1].clone()
-            if decoded[0, -1] != im_end_id:  # <im_end>
-                val = [[im_end_id]] + [[CODEBOOK_EOS_TOKEN_ID]] * (decoded.size(0) - 1)
-                decoded = torch.cat(
-                    (decoded, torch.tensor(val, device=device, dtype=torch.int)), dim=1
-                )
+#             if decoded[0, -1] != im_end_id:  # <im_end>
+#                 val = [[im_end_id]] + [[CODEBOOK_EOS_TOKEN_ID]] * (decoded.size(0) - 1)
+#                 decoded = torch.cat(
+#                     (decoded, torch.tensor(val, device=device, dtype=torch.int)), dim=1
+#                 )
 
             # But for global encoding, we should keep the <im_end> token
             global_encoded.append(decoded)
             all_codes.append(codes)
             seg_idx += 1
-
+        
         codes = torch.cat(all_codes, dim=1)
-        assert (codes >= 0).all(), f"Negative code found: {codes}"
+#         assert (codes >= 0).all(), f"Negative code found: {codes}"
         yield codes
 
 
@@ -745,8 +755,7 @@ def main(
     for idx, codes in enumerate(generator):
 #         np.save(f"codes_{idx}.npy", codes.cpu().numpy())
 #         logger.info(f"Saved codes to codes_{idx}.npy")
-        
-        return codes#, tokenizer.decode(global_encoded[-1][0])
+        return codes[1:], tokenizer.decode(codes[0])
 
 
 if __name__ == "__main__":
